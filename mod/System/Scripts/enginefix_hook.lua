@@ -1,4 +1,4 @@
--- Witcher engine fix: fast load/save list (Lua part of witcher-crash-lab\enginefix).
+-- Witcher Engine Fix: fast load/save list (the Lua part of the fix).
 --
 -- CListControl:AddListItem calls self:Refresh() after every item, and Refresh re-attaches every
 -- item already in the list to the content panel. Building the save list is therefore quadratic
@@ -6,9 +6,10 @@
 -- items are added without the per-item Refresh, and each touched list is refreshed once at the end.
 -- Every other list (journal, alchemy, ...) keeps the original behaviour.
 --
--- Loaded by testtools.lua (add "enginefix_hook" to its HOOKS list). Set ENABLED = false to turn it off.
+-- Run at startup by the shared loader testtools.lua.
 
-local ENABLED = true
+local ENABLED = true      -- false turns the fix off
+local LOG_TIMING = false  -- true appends the list build time to System\witcher_enginefix_lua.log
 
 if ENABLED and CListControl and CGuiNewSystemLoadPanel then
     local origAddListItem = CListControl.AddListItem
@@ -47,7 +48,7 @@ if ENABLED and CListControl and CGuiNewSystemLoadPanel then
         for list in pairs(lists) do
             list:Refresh()
         end
-        if clock then
+        if LOG_TIMING and clock then
             LogTiming(sType, t1 - t0, clock() - t1)
         end
         if not ok then

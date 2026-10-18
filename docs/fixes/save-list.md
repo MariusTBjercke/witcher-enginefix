@@ -27,24 +27,4 @@ Timing hooks at the CALL sites (see AGENTS.md, `[debug] savelist_timing`):
 
 `CListControl.luc`: `AddListItem` = `_AddListItem(...)` followed by `self:Refresh()`. `Refresh` re-attaches every existing item's button, text and icons to the content panel (`GuiAurAttachToObject`). Each re-attach removes the object from a child array by shifting the rest (`0x529f80` virtual method on `[this+0x3a8]`, `FUN_005bd680`), so building the list is far worse than linear. Those two shift loops were 65% of the time.
 
-`mod/System/Scripts/enginefix_hook.lua` wraps `CGuiNewSystemLoadPanel.SetType`: while it runs, `CListControl.AddListItem` calls `_AddListItem` only and marks the list dirty; afterwards each dirty list gets one `Refresh`. Other lists (journal, alchemy, main menu) are untouched. `startup.luc` loads `CListControl` and the load panel before `testtools`, and `makeClass` resolves methods through the class table at call time, so overriding the class methods also covers already created instances. Timings go to `System\witcher_enginefix_lua.log`.
-
-## Cause 2: thumbnails rewritten, then read back (fix 4)
-
-Hooking msvcr80's `CreateFileW` import during the list build showed 2651 opens taking 1.59 s: per save, the save itself, the thumbnail write, then the GUI opens the freshly written `.tga` twice at ~1.5 ms each. Unchanged files open in ~0.03 ms. (A PowerShell benchmark of write-then-open did not reproduce the cost, so it is specific to the game process; a likely cause is a security scanner rescanning just-modified files.)
-
-Fix 4 redirects the call at `0x8AACCA` (`call FUN_008a8f40`) to `ThumbWriteCached`:
-
-1. Read the thumbnail bytes from the save (positional `ReadFile` on the CRT handle via msvcr80 `_fileno`/`_get_osfhandle`; the OS file pointer is restored).
-2. If `temp\saves\screens\<id>.tga` already holds exactly those bytes, skip the write.
-3. The game wipes `%LOCALAPPDATA%\The Witcher\temp` between sessions, so thumbnails are also kept in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs\screens`. On the first open of a session an identical cached file is hard-linked into temp instead of being rewritten.
-4. Otherwise call the original writer, then hard-link the cache to the new file.
-
-Autosaves share one thumbnail name (`000003.tga`), so they still get rewritten each time (4 of 531 in the measurements), exactly like the original.
-
-Status: verified in game. Second open: 527 of 531 skipped. First open after a clean restart: 529 of 533 linked from the cache, 0.96 s instead of 2.5 s, and the CRT opens took 58 ms instead of 1.3-1.6 s, so hard-linked files open as fast as unchanged ones. Note that the game only wipes temp on a clean exit; after a crash or a killed process the old files are still there and are simply skipped.
-
-## Ideas not done
-
-- The remaining ~0.9 ms per row is GUI object creation (`DefineControl` for a button and a text label per row). A virtualised list that only creates visible rows would remove most of it, but needs `CScrollView` scroll callbacks.
-- `FUN_0084b320` (text glyph quads) takes ~11% while a long list is on screen: every row is drawn, visible or not.
+`mod/System/Scripts/enginefix_hook.lua` wraps `CGuiNewSystemLoadPanel.SetType`: while it runs, `CListControl.AddListItem` calls `_AddListItem` only and marks the list dirty; afterwards each dirty list gets one `Refresh`. Other lists (journal, alchemy, main menu) are untouched. `startup.luc` loads `CListControl` and the load panel before `testtools`, and `makeClass` resolves methods through the class table at call time, so overriding the class methods also covers already created instances. With `LOG_TIMING = true` at the top of the hook, timings go to `System\witcher_enginefix_lua.log`.

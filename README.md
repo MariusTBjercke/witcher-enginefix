@@ -1,67 +1,75 @@
 # Witcher Engine Fix
 
-Crash fixes and performance fixes for **The Witcher: Enhanced Edition**, patched into the running game. It works like the community "engine fixes" for other old games: a small DLL that the game loads by itself, which corrects specific engine bugs in memory. `witcher.exe` on disk is never modified.
+Crash and performance fixes for **The Witcher: Enhanced Edition**. A small DLL that the game loads by itself and that corrects specific engine bugs in memory while the game runs. `witcher.exe` and your saves are never modified.
 
-> **Status: work in progress.** There is no release yet. Every fix is verified in the game, but only on one setup (Steam 1.5.0.1304, Windows 11, DXVK).
+## What it fixes
 
-## Fixes
+| | What you notice | Default |
+|---|---|---|
+| **Crash in big fights** | A random crash when a death effect fires after the creature that caused it is already gone. | on |
+| **Slow load/save menu** | With many saves the menu took seconds to open. 531 saves: **14 s → under 1 s**. | on |
+| **Faster saving and loading** | The save checksum is computed 4× faster (a 230 MB save: ~0.33 s → 0.08 s). Identical result, so saves stay compatible with the unmodified game. | on |
+| **Main thread forced onto CPU core 0** | A 2007-era workaround made the game share core 0 with Windows' interrupt work. Windows can now pick a free core. | on |
+| **Hair depends on frame rate** | Hair damping was applied once per frame, so hair moved differently above 60 FPS. It now behaves as at 60 FPS at any frame rate. | on |
 
-| # | Fix | Type | Default |
-|---|---|---|---|
-| 1 | Crash when a death effect's creator no longer exists (big fights) | crash | on |
-| 2 | The main thread is pinned to CPU core 0 | performance (frame pacing) | on |
-| 3 | Shader effect cache keep-alive | experimental, no measured benefit | **off** |
-| 4 | The load/save list rewrites every save thumbnail each time it opens | load-menu speed | on |
-| 5 | Saving uses zlib's byte-at-a-time CRC32 | save/autosave speed (4x faster CRC, identical result) | on |
-| 6 | Hair damping is applied per frame, so hair behaves differently above 60 FPS | high frame rates | on |
-| Lua | The load/save list re-lays out every row for each row it adds | load-menu speed | on |
-
-With 531 saves, opening the load menu went from **14.1 s to under 1 s**, including the first open after starting the game. Details for each fix are in [`docs/fixes/`](docs/fixes/).
+Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
 
 ## Requirements
 
-- The Witcher: Enhanced Edition, patch **1.5**. Developed and tested on **Steam 1.5.0.1304**. Every fix checks the exact original bytes before it patches anything, so on another build it skips itself and logs why instead of patching blindly.
-- The game folder must not already contain a `dinput8.dll` from another mod.
+- The Witcher: Enhanced Edition, patch **1.5**. Tested on **Steam 1.5.0.1304** (Windows 11, DXVK).
+- GOG: same game build, but not tested yet. Every fix checks the exact game code before it patches anything. On a different build it skips itself and writes that to the log, so the worst case is that a fix does nothing.
 
-## Installation (from source, until there is a release)
+## Installation
 
-1. Build: run `build.bat` (needs Visual Studio with the C++ x86 tools). This writes `build\dinput8.dll`.
-2. Close the game, then install:
-   ```
-   powershell -ExecutionPolicy Bypass -File tools\install.ps1 -GamePath "D:\SteamLibrary\steamapps\common\The Witcher Enhanced Edition"
-   ```
-   This copies `System\dinput8.dll`, `System\witcher_enginefix.ini` (an existing one is kept) and `System\Scripts\enginefix_hook.lua`.
-3. The Lua fix is loaded by the shared `System\Scripts\testtools.lua` loader from [Witcher Speed Toggle](https://github.com/MariusTBjercke/witcher-speed-toggle) and [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot). Add `"enginefix_hook"` to its `HOOKS` list. A loader that does this on its own is planned (see [AGENTS.md](AGENTS.md)).
+1. Download `WitcherEngineFix-<version>.zip` from [Releases](https://github.com/MariusTBjercke/witcher-enginefix/releases).
+2. Extract the `System` folder into your game folder and merge it with the existing one, for example:
+   `...\steamapps\common\The Witcher Enhanced Edition\`
+3. Start the game as usual.
 
-Start the game through Steam as usual. `System\witcher_enginefix.log` shows which fixes were applied.
+To check that it works, open `System\witcher_enginefix.log` after starting the game. Each fix should say `applied`.
+
+| File | Purpose |
+|---|---|
+| `System\dinput8.dll` | The engine fix. The game loads it automatically |
+| `System\witcher_enginefix.ini` | Settings |
+| `System\Scripts\enginefix_hook.lua` | The load/save menu fix |
+| `System\Scripts\testtools.lua` | Shared startup loader (see [Compatibility](#compatibility)) |
 
 ## Configuration
 
-`System\witcher_enginefix.ini`. Restart the game after changing it.
+`System\witcher_enginefix.ini`, 1 = on, 0 = off. Restart the game after a change.
 
 ```ini
 [fixes]
-fix1=1   ; crash fix: death effect with a creator that no longer exists
-fix2=1   ; do not pin the main thread to CPU 0
-fix3=0   ; experimental: keep shader effects cached
-fix4=1   ; save list: do not rewrite thumbnails that are already up to date
-fix5=1   ; saves: faster crc32 (identical result)
-
-[debug]
-savelist_timing=1   ; log how long building the load/save list takes, per step
-crc_timing=1        ; log crc32 time and bytes per save (with fix5=0 it times the original)
+fix1=1   ; crash in big fights (death effect)
+fix2=1   ; do not force the main thread onto CPU core 0
+fix3=0   ; experimental, leave off
+fix4=1   ; load/save menu: do not rewrite save thumbnails that are already up to date
+fix5=1   ; faster save checksum
+fix6=1   ; hair independent of frame rate
 ```
 
-The Lua fix is switched off with `ENABLED = false` at the top of `System\Scripts\enginefix_hook.lua`.
+The menu's Lua part is switched off with `local ENABLED = false` at the top of `System\Scripts\enginefix_hook.lua`.
+
+## Compatibility
+
+- **Another `dinput8.dll`:** if your `System` folder already has a `dinput8.dll` from another mod, do not overwrite it. Both mods use the same file name, so only one can be loaded. Please open an issue.
+- **DXVK** and texture packs (tested with the AiO texture pack) work alongside it. ReShade uses `d3d9.dll`, not `dinput8.dll`, so it should too (untested).
+- **[Witcher Speed Toggle](https://github.com/MariusTBjercke/witcher-speed-toggle) and [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot)** share `System\Scripts\testtools.lua` with this mod. This mod ships loader version 2, which runs all three. If you install one of the others afterwards and it puts back version 1, the menu fix stops working, and the log says so (`Lua save-list fix: INACTIVE`). Copy `testtools.lua` from this mod back.
+- **Above 60 FPS:** the game is usually capped at 60 FPS because of glitches above it. This mod fixes the known hair cause, but other high-frame-rate problems have not been ruled out yet. If you play above 60 and notice something, please report it.
 
 ## Uninstall
 
-Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log` and `System\Scripts\enginefix_hook.lua`, and remove `"enginefix_hook"` from `testtools.lua`. Fix 4 also keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs`, which is safe to delete.
+Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log` and `System\Scripts\enginefix_hook.lua`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs`, which is safe to delete.
 
-## Building
+## Reporting a problem
 
-`build.bat` builds `build\dinput8.dll` and the profiler `build\sampler.exe`. Set `VCVARS` to your `vcvars32.bat` if Visual Studio is not in the default location. Developer notes, addresses and the research behind each fix are in [AGENTS.md](AGENTS.md) and [`docs/`](docs/).
+Open an [issue](https://github.com/MariusTBjercke/witcher-enginefix/issues) and attach `System\witcher_enginefix.log`. Say which store version you have (Steam/GOG) and whether you use DXVK or other mods.
+
+## For developers
+
+`build.bat` builds `build\dinput8.dll` (Visual Studio with the C++ x86 tools). `tools\install.ps1 -GamePath <game>` installs a build, and `tools\package-release.ps1` builds the release zip. How each fix was found, the addresses involved and open leads are in [`docs/fixes/`](docs/fixes/), [`docs/research.md`](docs/research.md) and [AGENTS.md](AGENTS.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The Witcher is a trademark of CD PROJEKT S.A. This is an unofficial fan mod.

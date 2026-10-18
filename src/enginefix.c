@@ -39,10 +39,13 @@
 //   power dt*60, which gives the 60 FPS behaviour at any frame rate.
 //
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
+// Diagnostics ([debug]) are off unless the ini turns them on.
 
 #include <windows.h>
 #include <stdio.h>
 #include <math.h>
+
+#define ENGINEFIX_VERSION "0.1.0"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -467,7 +470,7 @@ static const char *ApplyDanglyFix(void)
     memcpy(p, restore, sizeof restore); p += sizeof restore;
     FlushInstructionCache(GetCurrentProcess(), stub, p - stub);
 
-    g_danglyLog = IniFlag("debug", "dangly_log", 1) ? 5 : 0;
+    g_danglyLog = IniFlag("debug", "dangly_log", 0) ? 5 : 0;
     *(DWORD *)(patch + 1) = (DWORD)stub - (DANGLY_SITE + 5);
     return WriteCode(DANGLY_SITE, patch, sizeof patch) ? "applied" : "FAILED (VirtualProtect)";
 }
@@ -676,11 +679,11 @@ static void TryPatch(void)
     Log("fix 3 (shader effect cache churn): %s", FixEnabled("fix3") ? ApplyEffectCacheFix() : "disabled in ini");
     Log("fix 4 (save list thumbnail rewrite): %s", FixEnabled("fix4") ? ApplyThumbFix() : "disabled in ini");
     {
-        int fast = FixEnabled("fix5"), timing = IniFlag("debug", "crc_timing", 1);
+        int fast = FixEnabled("fix5"), timing = IniFlag("debug", "crc_timing", 0);
         Log("fix 5 (faster crc32 for saves): %s", fast || timing ? ApplyCrcFix(fast, timing) : "disabled in ini");
     }
     Log("fix 6 (frame-rate dependent hair damping): %s", FixEnabled("fix6") ? ApplyDanglyFix() : "disabled in ini");
-    if (IniFlag("debug", "savelist_timing", 1)) Log("debug: save-list timing %s", ApplySaveListTiming());
+    if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
 }
 
 static DWORD WINAPI PatchThread(LPVOID unused)
@@ -694,6 +697,37 @@ static DWORD WINAPI PatchThread(LPVOID unused)
     if (g_patchState == 0 && InterlockedCompareExchange(&g_patchState, 2, 0) == 0)
         Log("code never matched - different game version? Nothing patched.");
     return 0;
+}
+
+// ---- Lua part: is the save-list hook loaded? ---------------------------------
+// The save-list Lua fix (Scripts\enginefix_hook.lua) only runs if Scripts\testtools.lua, the shared
+// startup loader, lists it. Another mod can replace testtools.lua with an older loader, so say so.
+
+static void CheckLuaLoader(void)
+{
+    char dir[MAX_PATH], path[MAX_PATH], buf[4096], *slash;
+    FILE *f;
+    size_t n;
+    int listed = 0;
+
+    GetModuleFileNameA(g_self, dir, MAX_PATH);
+    slash = strrchr(dir, '\\');
+    if (slash) slash[1] = 0;
+    sprintf_s(path, MAX_PATH, "%sScripts\\enginefix_hook.lua", dir);
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+        Log("Lua save-list fix: Scripts\\enginefix_hook.lua not found (inactive)");
+        return;
+    }
+    sprintf_s(path, MAX_PATH, "%sScripts\\testtools.lua", dir);
+    if (fopen_s(&f, path, "rb") == 0) {
+        n = fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = 0;
+        listed = strstr(buf, "\"enginefix_hook\"") != NULL;
+        fclose(f);
+    }
+    Log(listed ? "Lua save-list fix: loaded by Scripts\\testtools.lua"
+               : "Lua save-list fix: INACTIVE, Scripts\\testtools.lua does not list enginefix_hook "
+                 "(another mod may have replaced it; copy the one from this mod back)");
 }
 
 // ---- dinput8 proxy ----------------------------------------------------------
@@ -724,7 +758,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         g_self = inst;
         g_mainThreadId = GetCurrentThreadId(); // static imports load on the process's initial thread
         DisableThreadLibraryCalls(inst);
-        Log("enginefix loaded");
+        Log("enginefix %s loaded", ENGINEFIX_VERSION);
+        CheckLuaLoader();
         t = CreateThread(NULL, 0, PatchThread, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }

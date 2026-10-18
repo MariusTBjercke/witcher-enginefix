@@ -17,6 +17,7 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 | `mod/` | Mirrors the game folder: `System/witcher_enginefix.ini`, `System/Scripts/enginefix_hook.lua` |
 | `build.bat` | Builds `build/dinput8.dll` and `build/sampler.exe` (MSVC x86; `VCVARS` overrides the vcvars32 path) |
 | `tools/install.ps1` | Copies the build and `mod/` into the game (`-GamePath` or `WITCHER_DIR`), keeps an existing ini |
+| `tools/package-release.ps1` | Builds and writes `dist/WitcherEngineFix-<version>.zip` (`System/` + `docs/README.txt` + LICENSE); version from `CHANGELOG.md`, must match `ENGINEFIX_VERSION` in `src/enginefix.c` |
 | `tools/profiler/` | Sampling profiler and its analysis scripts (below) |
 | `tools/luac50.py` | Lua 5.0 `.luc` disassembler; names closures by the field they are stored in. `python -I tools\luac50.py <file.luc> [function filter]` |
 | `tools/savetoc.py` | Lists a `.TheWitcherSave` table of contents |
@@ -25,7 +26,7 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 
 - **SteamStub:** Steam's `witcher.exe` is wrapped; the code section is decrypted at runtime, after our DLL loads. `PatchThread` polls until fix 1's original bytes are visible (= code decrypted), then applies everything once. `DirectInput8Create` also calls `TryPatch` (code is certainly decrypted by input init). Never launch `System\witcher.exe` directly ("Application load error 5:0000065434"); start through Steam.
 - **Every patch verifies the exact original bytes** and logs `skipped (bytes differ)` otherwise. Keep that contract for new fixes.
-- Each fix has an ini switch in `[fixes]` (`FixEnabled("fixN")`, default 1); diagnostics live in `[debug]`.
+- Each fix has an ini switch in `[fixes]` (`FixEnabled("fixN")`, default 1); diagnostics live in `[debug]` (`IniFlag("debug", ..., 0)`, off unless the ini turns them on; the owner's installed ini has them on).
 - Logs: `System\witcher_enginefix.log` (DLL) and `System\witcher_enginefix_lua.log` (Lua hook). The game's working directory is `System\`.
 - Call-site hooks: redirect a `CALL rel32` to generated code (`ApplySaveListTiming`) or to a C function with the same calling convention (`ThumbWriteCached`, cdecl). When two features touch one call site, the second must accept the first's target (see `g_tTarget`).
 - msvcp80 `std::string` is passed as an object; call `c_str` through the msvcp80 export (thiscall, used as `__fastcall` with a dummy EDX). CRT `FILE*` belongs to msvcr80, so use its exports (`_fileno`, `_get_osfhandle`), never the DLL's own CRT.
@@ -37,9 +38,15 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 3. Close the game, `powershell -ExecutionPolicy Bypass -File tools\install.ps1 -GamePath <game>`.
 4. Launch through Steam and check the log for `applied`.
 
+## Release
+
+1. Bump `## x.y.z` in `CHANGELOG.md` and `ENGINEFIX_VERSION` in `src/enginefix.c`.
+2. `powershell -ExecutionPolicy Bypass -File tools\package-release.ps1` (builds, then zips to `dist/`).
+3. Tag `vx.y.z`, `gh release create` with the zip and notes in the style of the owner's other Witcher mods. Ask the owner before publishing.
+
 ## Lua side
 
-- `startup.luc` runs `testtools` last (after all GUI classes, including `CListControl` and `gui_new_system_loadpanel`). Retail ships no `testtools`, so the owner's shared loader (`System\Scripts\testtools.lua`, from witcher-speed-toggle / witcher-quick-loot) runs a fixed `HOOKS` list of `*_hook.lua` files. `enginefix_hook` must be added to that list; that loader is byte-identical across the owner's mods, so adding it locally makes the installed copy differ. **Open decision:** ship a loader v2 that runs every `*_hook.lua`, or have the DLL run the Lua file itself.
+- `startup.luc` runs `testtools` last (after all GUI classes, including `CListControl` and `gui_new_system_loadpanel`). Retail ships no `testtools`, so the owner's mods share a loader, `System\Scripts\testtools.lua`, which runs a fixed `HOOKS` list of `*_hook.lua` files and skips missing ones. This repo ships **loader version 2** (`mod/System/Scripts/testtools.lua`): identical to version 1 in witcher-speed-toggle / witcher-quick-loot except that `HOOKS` also lists `enginefix_hook`. Those two repos still ship version 1 and should move to version 2; until then, installing one of them after this mod disables the Lua part. The DLL logs whether `testtools.lua` lists `enginefix_hook` (`CheckLuaLoader`). Lua 5.0 cannot list a directory, so a loader that discovers `*_hook.lua` by itself is not possible without the DLL.
 - `makeClass` (in `global.luc`) uses an `__index` function that looks methods up in the class table at call time, so replacing class methods affects existing instances.
 - Lua 5.0: varargs via `arg`, `pcall` returns status plus results, `os.clock`/`os.date` exist, the working directory is `System\`.
 
