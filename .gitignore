@@ -1,0 +1,21 @@
+# Build output
+build/
+dist/
+
+# Python
+__pycache__/
+
+# Profiler runs, dumps and logs belong in the lab, not here
+*.csv
+*.dmp
+*.log
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Local notes
+docs/local/
