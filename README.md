@@ -15,7 +15,7 @@ Crash fixes and performance fixes for **The Witcher: Enhanced Edition**, patched
 | 5 | Saving uses zlib's byte-at-a-time CRC32 | save/autosave speed (4x faster CRC, identical result) | on |
 | Lua | The load/save list re-lays out every row for each row it adds | load-menu speed | on |
 
-With 531 saves, opening the load menu went from **14.1 s to 0.84 s** (2.5 s on the first open of a session). Details for each fix are in [`docs/fixes/`](docs/fixes/).
+With 531 saves, opening the load menu went from **14.1 s to under 1 s**, including the first open after starting the game. Details for each fix are in [`docs/fixes/`](docs/fixes/).
 
 ## Requirements
 

@@ -21,6 +21,7 @@ Timing hooks at the CALL sites (see AGENTS.md, `[debug] savelist_timing`):
 | original | 14.1 s | 13.5 s | 0.23 s |
 | + Lua batching | 2.5 s | 2.0 s | 0.23 s |
 | + fix 4, later opens in a session | 0.84 s | 0.47 s | 0.12 s |
+| + fix 4 cache, first open after a clean restart (533 saves) | 0.96 s | 0.53 s | 0.28 s |
 
 ## Cause 1: every row re-lays out every row (Lua fix)
 
@@ -41,7 +42,7 @@ Fix 4 redirects the call at `0x8AACCA` (`call FUN_008a8f40`) to `ThumbWriteCache
 
 Autosaves share one thumbnail name (`000003.tga`), so they still get rewritten each time (4 of 531 in the measurements), exactly like the original.
 
-Status: steps 1-2 verified in game (527 of 531 skipped on the second open). Step 3 (hard links on the first open of a session) is harness-tested; whether it avoids the slow first open in the game is not measured yet.
+Status: verified in game. Second open: 527 of 531 skipped. First open after a clean restart: 529 of 533 linked from the cache, 0.96 s instead of 2.5 s, and the CRT opens took 58 ms instead of 1.3-1.6 s, so hard-linked files open as fast as unchanged ones. Note that the game only wipes temp on a clean exit; after a crash or a killed process the old files are still there and are simply skipped.
 
 ## Ideas not done
 
