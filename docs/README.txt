@@ -14,13 +14,15 @@ What it fixes:
   result, so saves stay compatible with the unmodified game.
 - The main thread is no longer forced onto CPU core 0 (a 2007-era workaround).
 - Hair no longer behaves differently above 60 FPS.
+- "The Source" (Chapter III): the door to Alvin's kidnappers no longer stays
+  locked, also in saves that are already stuck there.
 
 
 INSTALLATION
 ------------
-1. Copy the "System" folder into your game folder, e.g.
+1. Copy the "System" and "Data" folders into your game folder, e.g.
      ...\steamapps\common\The Witcher Enhanced Edition\
-   (merge with the existing folder).
+   (merge with the existing folders).
 2. Start the game as usual.
 
 To check that it works, open System\witcher_enginefix.log after starting the
@@ -29,15 +31,16 @@ game. Each fix should say "applied".
 Files installed:
   System\dinput8.dll                  the engine fix (loaded by the game)
   System\witcher_enginefix.ini        settings
-  System\Scripts\enginefix_hook.lua   the load/save menu fix
+  System\Scripts\enginefix_hook.lua   the load/save menu and "The Source" door fixes
+  Data\Override\EngineFix\           the "The Source" door script
   System\Scripts\testtools.lua        shared startup loader (see COMPATIBILITY)
 
 
 CONFIGURATION
 -------------
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
-The menu fix's Lua part is switched off with "local ENABLED = false" at the top
-of System\Scripts\enginefix_hook.lua.
+In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu
+fix's Lua part and "local KIDNAP_DOOR_FIX = false" the "The Source" door fix.
 
 
 COMPATIBILITY
@@ -57,7 +60,7 @@ COMPATIBILITY
 
 UNINSTALL
 ---------
-Delete System\dinput8.dll, System\witcher_enginefix.ini,
+Delete Data\Override\EngineFix, System\dinput8.dll, System\witcher_enginefix.ini,
 System\witcher_enginefix*.log and System\Scripts\enginefix_hook.lua. Delete
 System\Scripts\testtools.lua too, unless Speed Toggle or Quick Loot is installed.
 The thumbnail cache in %LOCALAPPDATA%\The Witcher\enginefix_thumbs is safe to

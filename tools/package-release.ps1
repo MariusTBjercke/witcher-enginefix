@@ -1,5 +1,5 @@
 # Builds dist\WitcherEngineFix-<version>.zip, laid out to extract straight into the game folder
-# (System\, README_WitcherEngineFix.txt, LICENSE_WitcherEngineFix.txt). Runs build.bat first unless
+# (System\, Data\, README_WitcherEngineFix.txt, LICENSE_WitcherEngineFix.txt). Runs build.bat first unless
 # -NoBuild. Entries use "/" separators so the zip also extracts correctly outside Windows
 # (PowerShell 5.1's ZipFile writes "\").
 param([string]$Version = "", [switch]$NoBuild)
@@ -27,6 +27,7 @@ $sources = [ordered]@{
     "LICENSE_WitcherEngineFix.txt" = "LICENSE"
     "System/dinput8.dll"           = "build\dinput8.dll"
     "System"                       = "mod\System"
+    "Data"                         = "mod\Data"
 }
 
 $dist = Join-Path $root "dist"

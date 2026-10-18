@@ -14,13 +14,16 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 |---|---|
 | `src/enginefix.c` | All fixes, the patch driver and the diagnostics. Header comment lists every fix |
 | `src/dinput8.def` | Exports `DirectInput8Create` undecorated |
-| `mod/` | Mirrors the game folder: `System/witcher_enginefix.ini`, `System/Scripts/enginefix_hook.lua` |
+| `mod/` | Mirrors the game folder: `System/witcher_enginefix.ini`, `System/Scripts/enginefix_hook.lua`, `System/Scripts/testtools.lua`, `Data/Override/EngineFix/` (NWScript fixes) |
 | `build.bat` | Builds `build/dinput8.dll` and `build/sampler.exe` (MSVC x86; `VCVARS` overrides the vcvars32 path) |
 | `tools/install.ps1` | Copies the build and `mod/` into the game (`-GamePath` or `WITCHER_DIR`), keeps an existing ini |
 | `tools/package-release.ps1` | Builds and writes `dist/WitcherEngineFix-<version>.zip` (`System/` + `docs/README.txt` + LICENSE); version from `CHANGELOG.md`, must match `ENGINEFIX_VERSION` in `src/enginefix.c` |
 | `tools/profiler/` | Sampling profiler and its analysis scripts (below) |
 | `tools/luac50.py` | Lua 5.0 `.luc` disassembler; names closures by the field they are stored in. `python -I tools\luac50.py <file.luc> [function filter]` |
 | `tools/savetoc.py` | Lists a `.TheWitcherSave` table of contents |
+| `tools/witcherres.py` | Game resources: `keys`/`get` (KEY V1.1 + BIFF V1.1 in `Data\`), `erf`/`erfget` (module `.mod`, also a gunzipped save `.sav`), `gff` (dump), `find` (search GFF values) |
+| `tools/ncsdis.py` | NCS disassembler; engine routines named from `System\Scripts\nwscriptdefn.nss` (routine = prototype index) |
+| `tools/build_ef_ncs.py` | Hand-assembles `mod/Data/Override/EngineFix/ef_q3043_door.ncs` from the program in the script (`--check` verifies) |
 
 ## Patch driver rules
 
@@ -47,6 +50,8 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 ## Lua side
 
 - `startup.luc` runs `testtools` last (after all GUI classes, including `CListControl` and `gui_new_system_loadpanel`). Retail ships no `testtools`, so the owner's mods share a loader, `System\Scripts\testtools.lua`, which runs a fixed `HOOKS` list of `*_hook.lua` files and skips missing ones. This repo ships **loader version 2** (`mod/System/Scripts/testtools.lua`): identical to version 1 in witcher-speed-toggle / witcher-quick-loot except that `HOOKS` also lists `enginefix_hook`. Those two repos still ship version 1 and should move to version 2; until then, installing one of them after this mod disables the Lua part. The DLL logs whether `testtools.lua` lists `enginefix_hook` (`CheckLuaLoader`). Lua 5.0 cannot list a directory, so a loader that discovers `*_hook.lua` by itself is not possible without the DLL.
+- `CGuiInGame:PerformGUIActionsOnGameLoadingEnd` is called by the engine (`FUN_00417e50`) once each loading screen has finished, after area transitions and loaded saves. `enginefix_hook.lua` wraps it to run NWScript fixes with `console("runscript <name>")`; a script reports back with `RunClientLua`.
+- Quest scripting: CDPR scripts compare `GetQuestCurrentPhaseIndex("<quest file>")` with `GetQuestPhaseIndex("<quest file>", "", "<phase Name>")`; phase names are the `Name` fields in the `.qst` (`witcherres.py gff`). `GetObjectByTag` only sees loaded areas, which is how `q3043_unlock` misses its doors.
 - `makeClass` (in `global.luc`) uses an `__index` function that looks methods up in the class table at call time, so replacing class methods affects existing instances.
 - Lua 5.0: varargs via `arg`, `pcall` returns status plus results, `os.clock`/`os.date` exist, the working directory is `System\`.
 

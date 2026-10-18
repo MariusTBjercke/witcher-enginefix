@@ -11,6 +11,7 @@ Crash and performance fixes for **The Witcher: Enhanced Edition**. A small DLL t
 | **Faster saving and loading** | The save checksum is computed 4× faster (a 230 MB save: ~0.33 s → 0.08 s). Identical result, so saves stay compatible with the unmodified game. | on |
 | **Main thread forced onto CPU core 0** | A 2007-era workaround made the game share core 0 with Windows' interrupt work. Windows can now pick a free core. | on |
 | **Hair depends on frame rate** | Hair damping was applied once per frame, so hair moved differently above 60 FPS. It now behaves as at 60 FPS at any frame rate. | on |
+| **Locked door in "The Source"** | Chapter III: Dandelion leads you to Alvin's kidnappers, but their door stays locked. The door is now unlocked when the game failed to, also in saves that are already stuck there. | on |
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
 
@@ -22,7 +23,7 @@ Each fix can be switched off on its own. Details for each fix are in [`docs/fixe
 ## Installation
 
 1. Download `WitcherEngineFix-<version>.zip` from [Releases](https://github.com/MariusTBjercke/witcher-enginefix/releases).
-2. Extract the `System` folder into your game folder and merge it with the existing one, for example:
+2. Extract the `System` and `Data` folders into your game folder and merge them with the existing ones, for example:
    `...\steamapps\common\The Witcher Enhanced Edition\`
 3. Start the game as usual.
 
@@ -32,7 +33,8 @@ To check that it works, open `System\witcher_enginefix.log` after starting the g
 |---|---|
 | `System\dinput8.dll` | The engine fix. The game loads it automatically |
 | `System\witcher_enginefix.ini` | Settings |
-| `System\Scripts\enginefix_hook.lua` | The load/save menu fix |
+| `System\Scripts\enginefix_hook.lua` | The load/save menu fix and the "The Source" door fix |
+| `Data\Override\EngineFix\` | The "The Source" door script (`.ncs`) and its source (`.nss`) |
 | `System\Scripts\testtools.lua` | Shared startup loader (see [Compatibility](#compatibility)) |
 
 ## Configuration
@@ -49,7 +51,7 @@ fix5=1   ; faster save checksum
 fix6=1   ; hair independent of frame rate
 ```
 
-The menu's Lua part is switched off with `local ENABLED = false` at the top of `System\Scripts\enginefix_hook.lua`.
+Two fixes are switched in `System\Scripts\enginefix_hook.lua` instead: `local ENABLED = false` turns off the menu's Lua part, `local KIDNAP_DOOR_FIX = false` the "The Source" door fix.
 
 ## Compatibility
 
@@ -60,7 +62,7 @@ The menu's Lua part is switched off with `local ENABLED = false` at the top of `
 
 ## Uninstall
 
-Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log` and `System\Scripts\enginefix_hook.lua`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs`, which is safe to delete.
+Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log`, `System\Scripts\enginefix_hook.lua` and `Data\Override\EngineFix`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs`, which is safe to delete.
 
 ## Reporting a problem
 

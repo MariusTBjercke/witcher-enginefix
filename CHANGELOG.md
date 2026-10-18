@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- "The Source" (Chapter III): the kidnappers' hideout door is unlocked when the game failed to (its unlock script can run while the door's area is not loaded, so it misses the door). Works on saves that are already stuck at the door. No game file is replaced: `enginefix_hook.lua` runs `Data\Override\EngineFix\ef_q3043_door.ncs` after each loading screen.
+- Tools: `tools/witcherres.py` (KEY/BIF, MOD and GFF reader), `tools/ncsdis.py` (NCS disassembler), `tools/build_ef_ncs.py`.
+
 ## 0.1.0
 
 First release.
