@@ -31,6 +31,18 @@ Each autosave spends ~0.3-0.5 s in zlib: byte-at-a-time CRC32 `FUN_00800010` (ta
 
 3-5 s stretches on the main thread inside `d3dx9_35.dll` with no game frame on the stack. Which D3DX work it is cannot be told from export names (see the pitfall in AGENTS.md); Microsoft's public PDB for `d3dx9_35.dll` would settle it. Texture loads go through `FUN_0053f910` → `D3DXCreateTextureFromFileInMemoryEx` (MANAGED pool, all `D3DX_DEFAULT` sizes and filters). The AiO texture pack is all power-of-two DDS with full mip chains, so D3DX does no CPU filtering for it.
 
+## Above 60 FPS
+
+PCGamingWiki says high FPS causes "hair physics glitch and crashes at anytime, in addition to script issues" and recommends a 60 FPS cap. The crash and script claims trace back to an old 120 Hz report that we could not read; the hair reports (Abigail, the Reverend, Geralt; fixed by vsync or a ~58-60 cap) are consistent. Here the cap is DXVK's `d3d9.maxFrameRate = 60`. What the engine does with frame time (static analysis, not tested in game):
+
+- **Timer:** 64-bit microsecond counter (`FUN_007fda90`/`FUN_007fdaf0`, RDTSC calibrated against QPC), so frame time is precise at any FPS. `g_cAuroraSettings.m_bStaticTimeFlow`/`m_nStaticTimeFlowFPS` (`0xC500E8`/`0xC500EC`) is a built-in fixed-time-per-frame mode (for cutscene recording), not a fix.
+- **Rigid-body physics (Karma-style world):** frame-rate independent. `FUN_008377e0` adds dt (µs → s) to an accumulator and runs fixed steps of `1/m_fPhysicsStepsPerSecond` (`0xC50A30`; camera world `0xC50A34`, minigames `0xC50A38`), at most 15 per frame, with no interpolation. Above the step rate, physics objects move only on some frames. The default rate is set at runtime; read it from the live process.
+- **Cloth (`MdlNodeCloth`, `m_bEnableClothySimulations`):** frame-rate independent. `FUN_005645d0` substeps at 100 Hz (dt clamped to 0.3 s), `FUN_00565980` at 200 Hz (dt clamped to 0.05 s). Above 100 FPS the 100 Hz cloth gets 0 steps on some frames (judder, not wrong motion).
+- **Dangly nodes (`MdlNodeDanglyNode`, very likely the hair):** **frame-rate dependent.** The update `0x552B70` (vtable `0xB59170` slot `0x9C`, not a defined function in Ghidra) clamps its dt argument to 0.05 and then never reads it: the spring step is per frame (gravity constant `-0.981` at `0xB588FC` per step). At 120 FPS the hair simulation runs twice as fast as intended. `FUN_0052abd0` passes dt down the node tree every frame. Teleport resets use `m_fDanglyNodeJumpDist`/`m_fDanglyNodeJumpRotationCos` (`0xC50638`/`0xC5063C`).
+- **Not yet checked:** camera smoothing, UI/Lua animations, NWScript timing, combat timing. Find these by testing at 120 FPS.
+
+Fix idea for dangly nodes: make the spring step dt-aware (scale the per-step constants by `dt*60`), or substep it at a fixed 60 Hz. A node cannot just be skipped on some frames, because the same update also places the node under its parent bone. Both options need the integration math in `0x552B70` worked out first.
+
 ## Other observations
 
 - At the 60 FPS cap the main thread is busy 40-50% of the time in Vizima and the swamp; the game is not CPU-bound in normal play.
