@@ -34,10 +34,15 @@
 // Fix 5: saves compute zlib 1.1.4's byte-at-a-time crc32 over the whole save. Replaced with an
 //   identical-result slicing-by-8 crc32.
 //
+// Fix 6: dangly nodes (hair and other spring-hung parts, 0x552B70) damp their velocity once per frame,
+//   so above 60 FPS hair is damped more per second than at 60. The damping factor is raised to the
+//   power dt*60, which gives the 60 FPS behaviour at any frame rate.
+//
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
 
 #include <windows.h>
 #include <stdio.h>
+#include <math.h>
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -403,6 +408,70 @@ static const char *ApplyCrcFix(int fast, int timing)
     return WriteCode(CRC_SITE, jmp, 5) ? (fast ? "applied" : "timing only (original crc32)") : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 6: frame-rate dependent dangly-node damping ---------------------------
+// The dangly-node update (0x552B70, hair and other spring-hung parts) integrates with dt but damps
+// the velocity once per frame: v *= damping (damping at [node data+0xC8]). Above 60 FPS the hair is
+// damped more per second than at 60, below it less. We replace the load of the damping factor with
+// a call that returns damping^(dt*60), the per-frame factor a 60 FPS frame of length dt would get.
+// At 60 FPS the result is the same as the original.
+
+#define DANGLY_SITE 0x005534FE // movss xmm0,[edi+0xC8]  (8 bytes); dt is in xmm1 here
+
+static const BYTE kDanglyOrig[] = { 0xF3, 0x0F, 0x10, 0x87, 0xC8, 0x00, 0x00, 0x00,   // movss xmm0,[edi+0xC8]
+                                    0xF3, 0x0F, 0x10, 0x96, 0x04, 0x01, 0x00, 0x00 }; // movss xmm2,[esi+0x104]
+static int g_danglyLog; // log the first few calls, to confirm the hook runs in game
+
+static float __cdecl DanglyDamping(float damping, float dt)
+{
+    float f = damping;
+    if (damping > 0.0f && damping < 1.0f && dt >= 0.0f) f = (float)pow(damping, dt * 60.0f);
+    if (g_danglyLog > 0) {
+        g_danglyLog--;
+        Log("fix 6: damping %.4f, dt %.2f ms -> %.4f", damping, dt * 1000.0f, f);
+    }
+    return f;
+}
+
+static const char *ApplyDanglyFix(void)
+{
+    static const BYTE save[] = { // sub esp,0x70 / movups [esp+i*16],xmm1..xmm7 / push eax,ecx,edx
+        0x83, 0xEC, 0x70,
+        0x0F, 0x11, 0x0C, 0x24,       0x0F, 0x11, 0x54, 0x24, 0x10, 0x0F, 0x11, 0x5C, 0x24, 0x20,
+        0x0F, 0x11, 0x64, 0x24, 0x30, 0x0F, 0x11, 0x6C, 0x24, 0x40, 0x0F, 0x11, 0x74, 0x24, 0x50,
+        0x0F, 0x11, 0x7C, 0x24, 0x60,
+        0x50, 0x51, 0x52,
+        0x83, 0xEC, 0x08,                               // sub esp,8
+        0xF3, 0x0F, 0x11, 0x4C, 0x24, 0x04,             // movss [esp+4],xmm1        (dt)
+        0xF3, 0x0F, 0x10, 0x87, 0xC8, 0x00, 0x00, 0x00, // movss xmm0,[edi+0xC8]     (damping)
+        0xF3, 0x0F, 0x11, 0x04, 0x24,                   // movss [esp],xmm0
+    };
+    static const BYTE restore[] = {
+        0xD9, 0x1C, 0x24,                               // fstp dword [esp]
+        0xF3, 0x0F, 0x10, 0x04, 0x24,                   // movss xmm0,[esp]
+        0x83, 0xC4, 0x08,                               // add esp,8
+        0x5A, 0x59, 0x58,                               // pop edx,ecx,eax
+        0x0F, 0x10, 0x0C, 0x24,       0x0F, 0x10, 0x54, 0x24, 0x10, 0x0F, 0x10, 0x5C, 0x24, 0x20,
+        0x0F, 0x10, 0x64, 0x24, 0x30, 0x0F, 0x10, 0x6C, 0x24, 0x40, 0x0F, 0x10, 0x74, 0x24, 0x50,
+        0x0F, 0x10, 0x7C, 0x24, 0x60,
+        0x83, 0xC4, 0x70,                               // add esp,0x70
+        0xC3,                                           // ret
+    };
+    BYTE *stub, *p, patch[8] = { 0xE8, 0, 0, 0, 0, 0x90, 0x90, 0x90 }; // call stub / 3x nop
+
+    if (!BytesMatch(DANGLY_SITE, kDanglyOrig, sizeof kDanglyOrig)) return "skipped (bytes differ)";
+    stub = VirtualAlloc(NULL, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!stub) return "FAILED (no memory)";
+    p = stub;
+    memcpy(p, save, sizeof save); p += sizeof save;
+    *p++ = 0xE8; PutRel32(p, (DWORD)DanglyDamping); p += 4; // call; result in st0, args popped by add esp,8
+    memcpy(p, restore, sizeof restore); p += sizeof restore;
+    FlushInstructionCache(GetCurrentProcess(), stub, p - stub);
+
+    g_danglyLog = IniFlag("debug", "dangly_log", 1) ? 5 : 0;
+    *(DWORD *)(patch + 1) = (DWORD)stub - (DANGLY_SITE + 5);
+    return WriteCode(DANGLY_SITE, patch, sizeof patch) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- Diagnostics: save-list timing --------------------------------------------
 // Times the parts of building the load/save list (Lua_GetSavedGameList) by redirecting individual
 // CALL rel32 instructions to generated stubs: Enter(id) -> original -> Leave(id). Logs one summary
@@ -610,6 +679,7 @@ static void TryPatch(void)
         int fast = FixEnabled("fix5"), timing = IniFlag("debug", "crc_timing", 1);
         Log("fix 5 (faster crc32 for saves): %s", fast || timing ? ApplyCrcFix(fast, timing) : "disabled in ini");
     }
+    Log("fix 6 (frame-rate dependent hair damping): %s", FixEnabled("fix6") ? ApplyDanglyFix() : "disabled in ini");
     if (IniFlag("debug", "savelist_timing", 1)) Log("debug: save-list timing %s", ApplySaveListTiming());
 }
 

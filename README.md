@@ -13,6 +13,7 @@ Crash fixes and performance fixes for **The Witcher: Enhanced Edition**, patched
 | 3 | Shader effect cache keep-alive | experimental, no measured benefit | **off** |
 | 4 | The load/save list rewrites every save thumbnail each time it opens | load-menu speed | on |
 | 5 | Saving uses zlib's byte-at-a-time CRC32 | save/autosave speed (4x faster CRC, identical result) | on |
+| 6 | Hair damping is applied per frame, so hair behaves differently above 60 FPS | high frame rates | on |
 | Lua | The load/save list re-lays out every row for each row it adds | load-menu speed | on |
 
 With 531 saves, opening the load menu went from **14.1 s to under 1 s**, including the first open after starting the game. Details for each fix are in [`docs/fixes/`](docs/fixes/).
