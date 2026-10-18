@@ -23,4 +23,11 @@ Harness with the game's own `crc32` machine code and table copied to their real 
 - 4800 cases (lengths 0-199, 8 alignments, 3 seeds), chained calls, and the `NULL` buffer: identical results.
 - 32 MB: original 46-48 ms, slicing-by-8 11.2-11.5 ms (**4.1-4.3x**) on a Core Ultra 7 265KF.
 
-In-game timing per autosave: pending (see the log after the next area transition).
+In game (2026-10-18), crc32 also runs when a save is **loaded**, not only when saving:
+
+| When | Data | slicing-by-8 | original (1.45 ms/MB, harness) |
+|---|---|---|---|
+| Loading a save (Vizima) | 227.6 MB, 13 820 calls | 79.5 ms | ~330 ms |
+| Right after the load | 23.6 MB, 742 calls | 8.3 ms | ~34 ms |
+
+So loading a save is roughly 0.25 s faster. Autosave numbers still to be logged.
