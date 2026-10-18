@@ -2,7 +2,7 @@
 
 Notes for agents and maintainers. User docs are in `README.md`, one page per fix in `docs/fixes/`, open leads in `docs/research.md`.
 
-**Start here:** if the sibling folder `..\witcher-crash-lab` exists, this is the owner's machine. Read its `AGENTS.md` and `notes/status.md` first: they hold the current state (what is installed in the game, what is waiting for an in-game test, the game path) and the crash/profiling workflow. Keep personal and machine-specific notes there, not in this repo. When a lab finding becomes a fix, document it here in `docs/fixes/` and update `docs/research.md`.
+**Start here:** if `docs/local/handoff.md` exists (git-ignored, local only), read it first: it is the latest session handoff. If the sibling folder `..\witcher-crash-lab` exists, this is the owner's machine. Read its `AGENTS.md` and `notes/status.md` first: they hold the current state (what is installed in the game, what is waiting for an in-game test, the game path) and the crash/profiling workflow. Keep personal and machine-specific notes there, not in this repo. When a lab finding becomes a fix, document it here in `docs/fixes/` and update `docs/research.md`.
 
 **Working with the owner:** they play while you investigate. Installing needs the game closed (the DLL is locked), so build and harness-test first, then ask them to close the game. Effects that need gameplay (a crash, a stutter, a menu) are verified from the logs after they report back.
 
