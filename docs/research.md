@@ -25,7 +25,7 @@ For ~54 s the main thread waited in DXVK (`d3d9.dll+0x11f50f`, `SleepConditionVa
 
 ## Autosave on area transitions
 
-Each autosave spends ~0.3-0.5 s in zlib: byte-at-a-time CRC32 `FUN_00800010` (table at `0xBC6610`), `inflate_fast`-like `FUN_00803860`, deflate window code `FUN_007feaf0`. A slicing-by-8 CRC32 is a drop-in replacement with identical output.
+Each autosave spends ~0.3-0.5 s in zlib: byte-at-a-time CRC32 `FUN_00800010` (table at `0xBC6610`), `inflate_fast`-like `FUN_00803860`, deflate window code `FUN_007feaf0`. The CRC part is fixed (fix 5). Deflate is zlib 1.1.4; a lower compression level or a newer deflate could cut the rest, but changes the save bytes, so it needs care (the game must still read them, and saves must stay compatible with the unpatched game).
 
 ## Area loading
 

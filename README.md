@@ -12,6 +12,7 @@ Crash fixes and performance fixes for **The Witcher: Enhanced Edition**, patched
 | 2 | The main thread is pinned to CPU core 0 | performance (frame pacing) | on |
 | 3 | Shader effect cache keep-alive | experimental, no measured benefit | **off** |
 | 4 | The load/save list rewrites every save thumbnail each time it opens | load-menu speed | on |
+| 5 | Saving uses zlib's byte-at-a-time CRC32 | save/autosave speed (4x faster CRC, identical result) | on |
 | Lua | The load/save list re-lays out every row for each row it adds | load-menu speed | on |
 
 With 531 saves, opening the load menu went from **14.1 s to 0.84 s** (2.5 s on the first open of a session). Details for each fix are in [`docs/fixes/`](docs/fixes/).
@@ -43,9 +44,11 @@ fix1=1   ; crash fix: death effect with a creator that no longer exists
 fix2=1   ; do not pin the main thread to CPU 0
 fix3=0   ; experimental: keep shader effects cached
 fix4=1   ; save list: do not rewrite thumbnails that are already up to date
+fix5=1   ; saves: faster crc32 (identical result)
 
 [debug]
 savelist_timing=1   ; log how long building the load/save list takes, per step
+crc_timing=1        ; log crc32 time and bytes per save (with fix5=0 it times the original)
 ```
 
 The Lua fix is switched off with `ENABLED = false` at the top of `System\Scripts\enginefix_hook.lua`.

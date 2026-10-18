@@ -31,6 +31,9 @@
 //   The game wipes temp\ between sessions, so thumbnails are also kept in The Witcher\enginefix_thumbs
 //   and hard-linked back into temp on the first list open of a session instead of being rewritten.
 //
+// Fix 5: saves compute zlib 1.1.4's byte-at-a-time crc32 over the whole save. Replaced with an
+//   identical-result slicing-by-8 crc32.
+//
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
 
 #include <windows.h>
@@ -297,6 +300,109 @@ static const char *ApplyThumbFix(void)
     return WriteCode(THUMB_SITE, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 5: faster CRC32 for saves ------------------------------------------------
+// The engine links zlib 1.1.4, whose crc32() (FUN_00800010, table at 0x00BC6610) processes one byte per
+// table lookup. Saving (autosaves on area transitions) runs it over the whole save. We jump from its
+// entry to a slicing-by-8 version with the identical result (same polynomial, same pre/post inversion,
+// returns 0 for a NULL buffer). [debug] crc_timing logs time and bytes per burst of calls.
+
+#define CRC_SITE  0x00800010 // uLong __cdecl crc32(uLong crc, const Bytef *buf, uInt len)
+#define CRC_RESUME 0x00800016 // after the first two instructions (mov ecx,[esp+8]; test ecx,ecx)
+
+static const BYTE kCrcOrig[] = { 0x8B, 0x4C, 0x24, 0x08, 0x85, 0xC9, 0x75, 0x03, 0x33, 0xC0, 0xC3 };
+typedef DWORD (__cdecl *Crc32_t)(DWORD, const BYTE *, DWORD);
+static DWORD g_crcTable[8][256];
+static Crc32_t g_crcOriginal; // trampoline into the game's own crc32
+static int g_crcFast, g_crcTiming;
+static volatile LONG g_crcCalls, g_crcBytes;
+static volatile LONGLONG g_crcTicks;
+static volatile LONG g_crcLastTick;
+
+static void CrcInitTables(void)
+{
+    DWORD n, c, k;
+    for (n = 0; n < 256; n++) {
+        for (c = n, k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+        g_crcTable[0][n] = c;
+    }
+    for (n = 0; n < 256; n++)
+        for (k = 1; k < 8; k++)
+            g_crcTable[k][n] = (g_crcTable[k - 1][n] >> 8) ^ g_crcTable[0][g_crcTable[k - 1][n] & 0xFF];
+}
+
+static DWORD CrcSlicing8(DWORD crc, const BYTE *buf, DWORD len)
+{
+    crc = ~crc;
+    while (len && ((DWORD_PTR)buf & 3)) { crc = g_crcTable[0][(crc ^ *buf++) & 0xFF] ^ (crc >> 8); len--; }
+    while (len >= 8) {
+        DWORD one = *(const DWORD *)buf ^ crc, two = *(const DWORD *)(buf + 4);
+        crc = g_crcTable[7][one & 0xFF] ^ g_crcTable[6][(one >> 8) & 0xFF] ^
+              g_crcTable[5][(one >> 16) & 0xFF] ^ g_crcTable[4][one >> 24] ^
+              g_crcTable[3][two & 0xFF] ^ g_crcTable[2][(two >> 8) & 0xFF] ^
+              g_crcTable[1][(two >> 16) & 0xFF] ^ g_crcTable[0][two >> 24];
+        buf += 8;
+        len -= 8;
+    }
+    while (len--) crc = g_crcTable[0][(crc ^ *buf++) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}
+
+static DWORD __cdecl Crc32Hook(DWORD crc, const BYTE *buf, DWORD len)
+{
+    LARGE_INTEGER a, b;
+    DWORD r;
+    if (!buf) return 0;
+    if (!g_crcTiming) return g_crcFast ? CrcSlicing8(crc, buf, len) : g_crcOriginal(crc, buf, len);
+    QueryPerformanceCounter(&a);
+    r = g_crcFast ? CrcSlicing8(crc, buf, len) : g_crcOriginal(crc, buf, len);
+    QueryPerformanceCounter(&b);
+    InterlockedIncrement(&g_crcCalls);
+    InterlockedExchangeAdd(&g_crcBytes, (LONG)len);
+    InterlockedExchangeAdd64(&g_crcTicks, b.QuadPart - a.QuadPart);
+    InterlockedExchange(&g_crcLastTick, (LONG)GetTickCount());
+    return r;
+}
+
+// Logs one line per burst of crc32 calls (a save), once the calls have stopped for a second.
+static DWORD WINAPI CrcTimingThread(LPVOID unused)
+{
+    LARGE_INTEGER f;
+    (void)unused;
+    QueryPerformanceFrequency(&f);
+    for (;;) {
+        Sleep(500);
+        if (g_crcCalls && GetTickCount() - (DWORD)g_crcLastTick > 1000) {
+            LONG calls = InterlockedExchange(&g_crcCalls, 0), bytes = InterlockedExchange(&g_crcBytes, 0);
+            LONGLONG ticks = InterlockedExchange64(&g_crcTicks, 0);
+            Log("crc32 (%s): %ld calls, %.1f MB, %.1f ms", g_crcFast ? "slicing-by-8" : "original",
+                calls, bytes / 1048576.0, ticks * 1000.0 / f.QuadPart);
+        }
+    }
+}
+
+static const char *ApplyCrcFix(int fast, int timing)
+{
+    BYTE *tramp, jmp[5] = { 0xE9 };
+    if (!BytesMatch(CRC_SITE, kCrcOrig, sizeof kCrcOrig)) return "skipped (bytes differ)";
+    // trampoline for the original: its first 6 bytes, then jump back into it
+    tramp = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return "FAILED (no memory)";
+    memcpy(tramp, kCrcOrig, 6);
+    tramp[6] = 0xE9;
+    PutRel32(tramp + 7, CRC_RESUME);
+    FlushInstructionCache(GetCurrentProcess(), tramp, 11);
+    g_crcOriginal = (Crc32_t)tramp;
+    CrcInitTables();
+    g_crcFast = fast;
+    g_crcTiming = timing;
+    if (timing) {
+        HANDLE t = CreateThread(NULL, 0, CrcTimingThread, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
+    *(DWORD *)(jmp + 1) = (DWORD)Crc32Hook - (CRC_SITE + 5);
+    return WriteCode(CRC_SITE, jmp, 5) ? (fast ? "applied" : "timing only (original crc32)") : "FAILED (VirtualProtect)";
+}
+
 // ---- Diagnostics: save-list timing --------------------------------------------
 // Times the parts of building the load/save list (Lua_GetSavedGameList) by redirecting individual
 // CALL rel32 instructions to generated stubs: Enter(id) -> original -> Leave(id). Logs one summary
@@ -500,6 +606,10 @@ static void TryPatch(void)
     Log("fix 2 (main thread CPU 0 pin): %s", FixEnabled("fix2") ? ApplyAffinityFix() : "disabled in ini");
     Log("fix 3 (shader effect cache churn): %s", FixEnabled("fix3") ? ApplyEffectCacheFix() : "disabled in ini");
     Log("fix 4 (save list thumbnail rewrite): %s", FixEnabled("fix4") ? ApplyThumbFix() : "disabled in ini");
+    {
+        int fast = FixEnabled("fix5"), timing = IniFlag("debug", "crc_timing", 1);
+        Log("fix 5 (faster crc32 for saves): %s", fast || timing ? ApplyCrcFix(fast, timing) : "disabled in ini");
+    }
     if (IniFlag("debug", "savelist_timing", 1)) Log("debug: save-list timing %s", ApplySaveListTiming());
 }
 
