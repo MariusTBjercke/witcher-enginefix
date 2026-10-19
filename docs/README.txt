@@ -12,6 +12,13 @@ What it fixes:
 - Slow load/save menu with many saves (531 saves: 14 s -> under 1 s).
 - Faster saving and loading: the save checksum is 4x faster, with an identical
   result, so saves stay compatible with the unmodified game.
+- Faster area loading: the mipmaps the game built on the CPU at every loading
+  screen (menus, fog of war) are built once and cached, with byte-identical
+  results. About 1 s less per area transition once an area has been visited.
+- Shorter wait after loading screens (the texture loader was checked only every
+  250 ms).
+- The first load/save menu after a PC restart no longer opens slowly: the saves
+  are read once in the background while the game starts.
 - The main thread is no longer forced onto CPU core 0 (a 2007-era workaround).
 - Hair no longer behaves differently above 60 FPS.
 - "The Source" (Chapter III): the door to Alvin's kidnappers no longer stays
@@ -39,6 +46,7 @@ Files installed:
 CONFIGURATION
 -------------
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
+The [debug] section holds diagnostics for development; leave them off.
 In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu
 fix's Lua part and "local KIDNAP_DOOR_FIX = false" the "The Source" door fix.
 
@@ -48,6 +56,8 @@ COMPATIBILITY
 - If System already has a dinput8.dll from another mod, do not overwrite it:
   only one of the two can be loaded. Please open an issue instead.
 - DXVK and texture packs work alongside it.
+- The area loading cache needs a CPU with SSE4.2 (any CPU since about 2008);
+  without it that fix skips itself and logs why.
 - Witcher Speed Toggle and Witcher Quick Loot share System\Scripts\testtools.lua
   with this mod. This mod ships loader version 2, which runs all three. If
   another mod puts back version 1, the menu fix stops working and the log says
@@ -63,8 +73,8 @@ UNINSTALL
 Delete Data\Override\EngineFix, System\dinput8.dll, System\witcher_enginefix.ini,
 System\witcher_enginefix*.log and System\Scripts\enginefix_hook.lua. Delete
 System\Scripts\testtools.lua too, unless Speed Toggle or Quick Loot is installed.
-The thumbnail cache in %LOCALAPPDATA%\The Witcher\enginefix_thumbs is safe to
-delete.
+The caches in %LOCALAPPDATA%\The Witcher\enginefix_thumbs and
+%LOCALAPPDATA%\The Witcher\enginefix_mips are safe to delete at any time.
 
 
 PROBLEMS

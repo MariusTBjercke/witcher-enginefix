@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Fix 7: the first load/save list after a PC restart is no longer slow (3.5-6 s with ~575 saves): the saves are read once in the background at startup.
 - Fix 8: area loads no longer rebuild the mipmaps of textures that ship without them (UI, fog of war; ~1-1.5 s of a ~2.8 s transition) on the CPU every time: the levels D3DX built are kept in a disk cache (`%LOCALAPPDATA%\The Witcher\enginefix_mips`) and reused, with byte-identical results.

@@ -62,7 +62,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 
-#define ENGINEFIX_VERSION "0.2.0"
+#define ENGINEFIX_VERSION "0.3.0"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;

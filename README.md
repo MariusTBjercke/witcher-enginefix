@@ -9,6 +9,9 @@ Crash and performance fixes for **The Witcher: Enhanced Edition**. A small DLL t
 | **Crash in big fights** | A random crash when a death effect fires after the creature that caused it is already gone. | on |
 | **Slow load/save menu** | With many saves the menu took seconds to open. 531 saves: **14 s → under 1 s**. | on |
 | **Faster saving and loading** | The save checksum is computed 4× faster (a 230 MB save: ~0.33 s → 0.08 s). Identical result, so saves stay compatible with the unmodified game. | on |
+| **Faster area loading** | The game rebuilt the mipmaps of textures that ship without them (menus, fog of war) on the CPU at every loading screen. They are now built once and kept in a cache, with byte-identical results: about **1 s less per area transition** once an area has been visited (menu textures 0.63 s → 0.05 s; the first menu load at startup 0.44 s → 0.07 s). | on |
+| **Shorter wait after loading** | After a loading screen the game waited for the texture loader in 250 ms steps, sometimes 0.25 s for nothing. It now checks every millisecond. | on |
+| **Slow first load/save menu after a PC restart** | The first time the menu opened after a restart, every save was opened cold (the antivirus scans each file again): 3.5-6 s with 575 saves instead of ~1 s. The saves are now read once in the background while the game starts. | on |
 | **Main thread forced onto CPU core 0** | A 2007-era workaround made the game share core 0 with Windows' interrupt work. Windows can now pick a free core. | on |
 | **Hair depends on frame rate** | Hair damping was applied once per frame, so hair moved differently above 60 FPS. It now behaves as at 60 FPS at any frame rate. | on |
 | **Locked door in "The Source"** | Chapter III: Dandelion leads you to Alvin's kidnappers, but their door stays locked. The door is now unlocked when the game failed to, also in saves that are already stuck there. | on |
@@ -49,20 +52,26 @@ fix3=0   ; experimental, leave off
 fix4=1   ; load/save menu: do not rewrite save thumbnails that are already up to date
 fix5=1   ; faster save checksum
 fix6=1   ; hair independent of frame rate
+fix7=1   ; read the saves in the background at startup (first load/save menu after a PC restart)
+fix8=1   ; area loading: cache the mipmaps the game builds on the CPU
+fix9=1   ; shorter wait for the texture loader after a loading screen
 ```
+
+The `[debug]` section holds diagnostics for development (logging only); leave them off.
 
 Two fixes are switched in `System\Scripts\enginefix_hook.lua` instead: `local ENABLED = false` turns off the menu's Lua part, `local KIDNAP_DOOR_FIX = false` the "The Source" door fix.
 
 ## Compatibility
 
 - **Another `dinput8.dll`:** if your `System` folder already has a `dinput8.dll` from another mod, do not overwrite it. Both mods use the same file name, so only one can be loaded. Please open an issue.
-- **DXVK** and texture packs (tested with the AiO texture pack) work alongside it. ReShade uses `d3d9.dll`, not `dinput8.dll`, so it should too (untested).
+- **DXVK** and texture packs (tested with the AiO texture pack) work alongside it. The area loading cache is keyed on the texture data itself, so changing or removing a texture pack is fine.
+- **Area loading cache:** needs a CPU with SSE4.2 (any CPU since about 2008); without it that fix skips itself and says so in the log. ReShade uses `d3d9.dll`, not `dinput8.dll`, so it should too (untested).
 - **[Witcher Speed Toggle](https://github.com/MariusTBjercke/witcher-speed-toggle) and [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot)** share `System\Scripts\testtools.lua` with this mod. This mod ships loader version 2, which runs all three. If you install one of the others afterwards and it puts back version 1, the menu fix stops working, and the log says so (`Lua save-list fix: INACTIVE`). Copy `testtools.lua` from this mod back.
 - **Above 60 FPS:** the game is usually capped at 60 FPS because of glitches above it. This mod fixes the known hair cause, but other high-frame-rate problems have not been ruled out yet. If you play above 60 and notice something, please report it.
 
 ## Uninstall
 
-Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log`, `System\Scripts\enginefix_hook.lua` and `Data\Override\EngineFix`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs`, which is safe to delete.
+Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log`, `System\Scripts\enginefix_hook.lua` and `Data\Override\EngineFix`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs` and the area loading fix a texture cache in `%LOCALAPPDATA%\The Witcher\enginefix_mips` (small: about 10 MB after a handful of areas); both are safe to delete at any time.
 
 ## Reporting a problem
 
