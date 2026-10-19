@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fix 7: the first load/save list after a PC restart is no longer slow (3.5-6 s with ~575 saves): the saves are read once in the background at startup.
+- Fix 8: area loads no longer rebuild the mipmaps of textures that ship without them (UI, fog of war; ~1-1.5 s of a ~2.8 s transition) on the CPU every time: the levels D3DX built are kept in a disk cache (`%LOCALAPPDATA%\The Witcher\enginefix_mips`) and reused, with byte-identical results.
+- Fix 9: after a load the game no longer waits for the texture loader in 250 ms steps (up to ~240 ms per load).
+- The log no longer drops lines when two threads write at the same moment.
+- Diagnostics: `[debug] wait_timing` (Sleep polling per caller, texture wait after loads), `texture_timing` (time per texture during loads) and `frame_log` (stretches of low frame rate with the window state).
+
 ## 0.2.0
 
 - "The Source" (Chapter III): the kidnappers' hideout door is unlocked when the game failed to (its unlock script can run while the door's area is not loaded, so it misses the door). Works on saves that are already stuck at the door. No game file is replaced: `enginefix_hook.lua` runs `Data\Override\EngineFix\ef_q3043_door.ncs` after each loading screen.

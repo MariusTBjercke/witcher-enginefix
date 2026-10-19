@@ -38,6 +38,17 @@
 //   so above 60 FPS hair is damped more per second than at 60. The damping factor is raised to the
 //   power dt*60, which gives the 60 FPS behaviour at any frame rate.
 //
+// Fix 7: the first load/save list after a restart opened every save cold (the antivirus scans each file
+//   again on its first open), 3.5-6 s instead of ~1 s with ~575 saves. A low-priority thread opens and
+//   reads each save (trailer, TOC, thumbnail) and its cached thumbnail once at startup. It only reads.
+//
+// Fix 8: D3DX builds the mip levels of DDS textures that have none (UI, fog of war) on the CPU, at every
+//   load (~1.5 s of a ~2.8 s area transition). The levels it built are cached on disk and handed back
+//   with the texture next time, so D3DX copies them instead of filtering (same bytes).
+//
+// Fix 9: after loads the main thread waits for the texture loader in Sleep(250) rounds (242 ms slept on an
+//   already empty queue in one transition); it now polls with Sleep(1).
+//
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
 // Diagnostics ([debug]) are off unless the ini turns them on.
 
@@ -45,8 +56,11 @@
 #include <stdio.h>
 #include <math.h>
 #include <intrin.h>
+#include <shlobj.h>
 
-#pragma intrinsic(_ReturnAddress)
+#pragma intrinsic(_ReturnAddress, _AddressOfReturnAddress)
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "user32.lib")
 
 #define ENGINEFIX_VERSION "0.2.0"
 
@@ -55,24 +69,34 @@ static HMODULE g_realDinput;
 static DWORD g_mainThreadId;
 static volatile LONG g_patchState; // 0 = pending, 1 = done, 2 = gave up
 
+// One WriteFile per line on a handle opened for appending: lines from several threads never get lost or
+// mixed (fopen_s denies shared writes, so a second thread's line used to be dropped), and there is no
+// lock that a thread killed at exit could leave held.
 static void Log(const char *fmt, ...)
 {
-    char path[MAX_PATH], *slash;
-    FILE *f;
+    char path[MAX_PATH], line[2048], *slash;
     va_list ap;
     SYSTEMTIME st;
+    HANDLE h;
+    DWORD written;
+    int n, m;
 
     GetModuleFileNameA(g_self, path, MAX_PATH);
     slash = strrchr(path, '\\');
     strcpy_s(slash ? slash + 1 : path, MAX_PATH - (slash ? (slash + 1 - path) : 0), "witcher_enginefix.log");
-    if (fopen_s(&f, path, "a") != 0) return;
     GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d ", st.wHour, st.wMinute, st.wSecond);
+    n = sprintf_s(line, sizeof line, "%02d:%02d:%02d ", st.wHour, st.wMinute, st.wSecond);
     va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
+    m = _vsnprintf_s(line + n, sizeof line - n - 2, _TRUNCATE, fmt, ap);
     va_end(ap);
-    fputc('\n', f);
-    fclose(f);
+    n += m < 0 ? (int)strlen(line + n) : m;
+    line[n++] = '\r';
+    line[n++] = '\n';
+    h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    WriteFile(h, line, n, &written, NULL);
+    CloseHandle(h);
 }
 
 static BOOL BytesMatch(DWORD addr, const BYTE *bytes, size_t len)
@@ -205,6 +229,7 @@ static OsfHandle_t g_getOsfHandle;
 static wchar_t g_tempSaves[MAX_PATH];  // %LOCALAPPDATA%\The Witcher\temp\saves (wiped by the game between sessions)
 static wchar_t g_thumbCache[MAX_PATH]; // %LOCALAPPDATA%\The Witcher\enginefix_thumbs (kept)
 static int g_thumbSkipped, g_thumbLinked, g_thumbWritten;
+static volatile LONG g_listStarted; // a save list is being built: fix 7's warm-up stops
 
 static BOOL ReadAt(HANDLE h, DWORD offset, void *buf, DWORD size)
 {
@@ -255,6 +280,7 @@ static void __cdecl ThumbWriteCached(void *save, TocEntry *entry, const char *su
     wchar_t dest[MAX_PATH], cache[MAX_PATH], cacheDir[MAX_PATH];
     const char *name, *base;
 
+    g_listStarted = 1;
     cache[0] = cacheDir[0] = 0;
     name = (entry->size && entry->size <= MAX_THUMB && sub) ? g_strCStr(entry->name, NULL) : NULL;
     if (!name || !ReadThumbFromSave(save, entry, fromSave)) goto write;
@@ -478,6 +504,111 @@ static const char *ApplyDanglyFix(void)
     return WriteCode(DANGLY_SITE, patch, sizeof patch) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 7: warm the save files before the first save-list open ------------------
+// Building the list opens every save (FUN_008aaa40: trailer, TOC, thumbnail) and fix 4 reads the cached
+// thumbnail. After a restart each first open costs ~4-8 ms on NVMe, ~7 ms per save in all (Defender scans
+// the file again; later opens are ~0.5 ms). This thread does the same opens and reads at startup, at
+// below-normal priority, so the list finds them warm. Read only; it stops as soon as a list build starts.
+
+#define MAX_TOC_BYTES (1024 * 1024)
+
+static BOOL WarmSave(const wchar_t *path, BYTE *buf, LONGLONG *bytes, int *thumbs)
+{
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, NULL);
+    LARGE_INTEGER size;
+    DWORD trailer[3], toc, tocLen, p, n, i, entrySize, entryOffset;
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    // trailer (last 12 bytes): {?, toc_offset, entry_count}; tools/savetoc.py also accepts the first field
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 12 || size.QuadPart > 0x7FFFFFFF ||
+        !ReadAt(h, (DWORD)size.QuadPart - 12, trailer, 12)) goto done;
+    *bytes += 12;
+    toc = trailer[1] < (DWORD)size.QuadPart - 12 ? trailer[1] : trailer[0];
+    if (toc >= (DWORD)size.QuadPart - 12) goto done;
+    tocLen = (DWORD)size.QuadPart - 12 - toc;
+    if (tocLen > MAX_TOC_BYTES || !ReadAt(h, toc, buf, tocLen)) goto done;
+    *bytes += tocLen;
+    for (i = 0, p = 0; i < trailer[2] && p + 4 <= tocLen; i++, p += 12 + n) { // u32 name_len, name, u32 size, u32 offset
+        n = *(DWORD *)(buf + p);
+        if (p + 12 + n > tocLen) break;
+        entrySize = *(DWORD *)(buf + p + 4 + n);
+        entryOffset = *(DWORD *)(buf + p + 8 + n);
+        if (n >= 4 && _strnicmp((char *)buf + p + 4 + n - 4, ".tga", 4) == 0 && entrySize && entrySize <= MAX_THUMB &&
+            entryOffset < (DWORD)size.QuadPart) {
+            char base[MAX_PATH];
+            const char *b = (char *)buf + p + 4, *e = b + n, *s;
+            wchar_t cache[MAX_PATH];
+            HANDLE c;
+            for (s = e; s > b && s[-1] != '\\'; s--) {}
+            if (e - s >= MAX_PATH) break;
+            memcpy(base, s, e - s);
+            base[e - s] = 0;
+            if (ReadAt(h, entryOffset, buf + MAX_TOC_BYTES, entrySize)) *bytes += entrySize;
+            if (g_thumbCache[0] && swprintf_s(cache, MAX_PATH, L"%ls\\screens\\%hs", g_thumbCache, base) > 0 &&
+                (c = CreateFileW(cache, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL))
+                    != INVALID_HANDLE_VALUE) {
+                if (ReadAt(c, 0, buf + MAX_TOC_BYTES, entrySize)) { *bytes += entrySize; (*thumbs)++; }
+                CloseHandle(c);
+            }
+            break;
+        }
+    }
+done:
+    CloseHandle(h);
+    return TRUE;
+}
+
+static DWORD WINAPI WarmSavesThread(LPVOID unused)
+{
+    wchar_t docs[MAX_PATH], pattern[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+    BYTE *buf;
+    LARGE_INTEGER f, a, b, o1, o2;
+    LONGLONG bytes = 0, slowest = 0;
+    int saves = 0, thumbs = 0;
+    (void)unused;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, docs))) return 0;
+    swprintf_s(pattern, MAX_PATH, L"%ls\\The Witcher\\saves\\*.TheWitcherSave", docs);
+    buf = VirtualAlloc(NULL, MAX_TOC_BYTES + MAX_THUMB, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!buf) return 0;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&a);
+    find = FindFirstFileW(pattern, &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (g_listStarted || (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            swprintf_s(path, MAX_PATH, L"%ls\\The Witcher\\saves\\%ls", docs, fd.cFileName);
+            QueryPerformanceCounter(&o1);
+            if (WarmSave(path, buf, &bytes, &thumbs)) saves++;
+            QueryPerformanceCounter(&o2);
+            if (o2.QuadPart - o1.QuadPart > slowest) slowest = o2.QuadPart - o1.QuadPart;
+        } while (!g_listStarted && FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    QueryPerformanceCounter(&b);
+    VirtualFree(buf, 0, MEM_RELEASE);
+    Log("fix 7: warmed %d saves and %d cached thumbnails (%.1f MB read) in %.0f ms, slowest %.1f ms%s", saves, thumbs,
+        bytes / 1048576.0, (b.QuadPart - a.QuadPart) * 1000.0 / f.QuadPart, slowest * 1000.0 / f.QuadPart,
+        g_listStarted ? " (stopped: a save list was opened)" : "");
+    return 0;
+}
+
+static const char *ApplySaveWarmup(void)
+{
+    HANDLE t;
+    if (!g_thumbCache[0]) { // fix 4 off or not applied: still warm the saves, just not the thumbnail cache
+        wchar_t local[MAX_PATH];
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH))
+            swprintf_s(g_thumbCache, MAX_PATH, L"%ls\\The Witcher\\enginefix_thumbs", local);
+    }
+    t = CreateThread(NULL, 0, WarmSavesThread, NULL, 0, NULL);
+    if (!t) return "FAILED (no thread)";
+    CloseHandle(t);
+    return "started";
+}
+
 // ---- Diagnostics: save-list timing --------------------------------------------
 // Times the parts of building the load/save list (Lua_GetSavedGameList) by redirecting individual
 // CALL rel32 instructions to generated stubs: Enter(id) -> original -> Leave(id). Logs one summary
@@ -595,7 +726,7 @@ static void LogOpens(void)
 
 static void __cdecl TimingEnter(int id)
 {
-    if (id == T_LIST) { HookCreateFileOnce(); g_inList = 1; }
+    if (id == T_LIST) { HookCreateFileOnce(); g_inList = 1; g_listStarted = 1; }
     QueryPerformanceCounter(&g_tStart[id]);
 }
 
@@ -686,8 +817,9 @@ static const char *ApplySaveListTiming(void)
 #define MAX_SLEEP_SITES   64
 
 static const BYTE kTexWaitSleepOrig[] = { 0x68, 0xFA, 0x00, 0x00, 0x00, 0xFF, 0xD5 };
+static const BYTE kTexWaitSleepFix9[] = { 0x68, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xD5 }; // after fix 9
 static const struct { DWORD ret; const char *name; } kSleepNames[] = {
-    { TEXWAIT_SLEEP_RET, "texture wait, Sleep(250)" },
+    { TEXWAIT_SLEEP_RET, "texture wait" },
     { 0x0081A8A4, "resource wait, Sleep(5)" },
     { 0x00456064, "spinlock, Sleep(1)" },
     { 0x007536C4, "main loop, window inactive, Sleep(1000)" },
@@ -836,7 +968,7 @@ static void __fastcall TexWaitHook(void *loader, void *edx)
         Log("texture wait (AurWaitForAllTexturesToLoad): %.1f ms, no sleep (%d pending at start)",
             (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart, pending);
     else
-        Log("texture wait (AurWaitForAllTexturesToLoad): %.1f ms, %d x Sleep(250), %d pending at start, "
+        Log("texture wait (AurWaitForAllTexturesToLoad): %.1f ms, %d x Sleep, %d pending at start, "
             "queue empty after %.1f ms (%.1f ms waited on an empty queue)",
             (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart, g_texSleeps, pending,
             ((g_texEmptyAt ? g_texEmptyAt : b.QuadPart) - a.QuadPart) * 1000.0 / g_qpf.QuadPart,
@@ -853,7 +985,8 @@ static const char *ApplyWaitTiming(void)
     HANDLE t;
 
     *(DWORD *)(call + 1) = TEXWAIT_FUNC - (TEXWAIT_SITE + 5);
-    if (!BytesMatch(TEXWAIT_SITE, call, 5) || !BytesMatch(TEXWAIT_SLEEP, kTexWaitSleepOrig, sizeof kTexWaitSleepOrig))
+    if (!BytesMatch(TEXWAIT_SITE, call, 5) || (!BytesMatch(TEXWAIT_SLEEP, kTexWaitSleepOrig, sizeof kTexWaitSleepOrig) &&
+                                               !BytesMatch(TEXWAIT_SLEEP, kTexWaitSleepFix9, sizeof kTexWaitSleepFix9)))
         return "skipped (bytes differ)";
     __try { cur = *(DWORD *)SLEEP_IAT; } __except (EXCEPTION_EXECUTE_HANDLER) { cur = 0; }
     if (!cur || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -875,6 +1008,422 @@ static const char *ApplyWaitTiming(void)
     return result;
 }
 
+// ---- Fix 8 and diagnostics: texture creation ---------------------------------------
+// Area loads spend 3-5 s in d3dx9 (public PDB): D3DXCreateTextureFromFileInMemoryEx -> D3DXFilterTexture ->
+// box filter with DXT decode/encode, i.e. mipmaps built on the CPU. FUN_0053f910 passes the resource's DDS
+// with MipLevels = D3DX_DEFAULT (full chain), Format = D3DFMT_FROM_FILE, MANAGED. Many DDS files (UI, fog of
+// war) have no mips, and the game recreates them on every load (~70 ms for a 2048x1024 DXT5).
+//
+// Fix 8: for a DXT DDS with only the top level, the levels D3DX built are read back once (LockRect, read
+// only) and kept in %LOCALAPPDATA%\The Witcher\enginefix_mips\<d3dx9 build>\, keyed by two checksums of the
+// source (CRC32C and CRC32) and its size. Next time the texture is created from the same DDS with those
+// levels appended, so D3DX copies them instead of filtering: the same bytes it produced before. Files on
+// disk, not in memory: Windows' file cache keeps repeats fast without using the game's address space.
+//
+// [debug] texture_timing=1 logs, per burst of loads, how many textures came with all their levels, how many
+// had levels generated, how many came from fix 8's cache, and the slowest textures.
+
+#define TEXCREATE_SITE  0x0053FAC3 // call D3DXCreateTextureFromFileInMemoryEx (thunk) in FUN_0053f910
+#define TEXCREATE_THUNK 0x00A750FE
+#define TEX_TOP 12
+#define MIP_MAGIC MAKEFOURCC('E', 'F', 'M', 'P')
+#define MIP_VERSION 3
+
+typedef HRESULT (WINAPI *TexCreate_t)(void *dev, const BYTE *data, UINT size, UINT w, UINT h, UINT mips, DWORD usage,
+                                      DWORD fmt, DWORD pool, DWORD filter, DWORD mipFilter, DWORD colorKey,
+                                      void *info, void *palette, void **tex);
+typedef struct { double ms; UINT w, h, fileMips, dataLevels, levels, outW, outH; DWORD fourcc, bits, outFmt; int cached; char name[48]; } TexRec;
+typedef struct { DWORD magic, version, w, h, fourcc, levels, bytes, crc32c, crc32, size, levelsCrc; } MipFileHeader;
+static struct {
+    int n, nGen, nResized, nOther, nCached, nStored;
+    LONGLONG ticks, ticksGen, ticksOther, ticksCached;
+    TexRec top[TEX_TOP];
+    int nTop;
+    DWORD last;
+} g_tex;
+static CRITICAL_SECTION g_texLock;
+static int g_texTiming, g_mipFix;
+static wchar_t g_mipDir[MAX_PATH];
+static volatile LONG g_mipHits, g_mipStores, g_mipFailures;
+
+static UINT DdsLevelBytes(UINT w, UINT h, DWORD fourcc, UINT bits)
+{
+    if (fourcc == MAKEFOURCC('D', 'X', 'T', '1') || fourcc == MAKEFOURCC('A', 'T', 'I', '1'))
+        return ((w + 3) / 4) * ((h + 3) / 4) * 8;
+    if (fourcc) return ((w + 3) / 4) * ((h + 3) / 4) * 16; // DXT2-5, ATI2
+    return w * h * (bits / 8);
+}
+
+static BOOL IsDxt(DWORD fourcc)
+{
+    return fourcc == MAKEFOURCC('D', 'X', 'T', '1') || fourcc == MAKEFOURCC('D', 'X', 'T', '3') ||
+           fourcc == MAKEFOURCC('D', 'X', 'T', '5');
+}
+
+static void FormatName(char *out, size_t len, DWORD fmt, UINT bits)
+{
+    if (fmt > 0xFF) sprintf_s(out, len, "%c%c%c%c", (char)fmt, (char)(fmt >> 8), (char)(fmt >> 16), (char)(fmt >> 24));
+    else if (bits) sprintf_s(out, len, "RGB%u", bits);
+    else sprintf_s(out, len, "fmt%lu", fmt);
+}
+
+static DWORD Crc32c(const BYTE *p, DWORD len) // SSE4.2 crc32 instruction (checked in ApplyMipCache)
+{
+    DWORD c = 0xFFFFFFFF;
+    for (; len >= 4; p += 4, len -= 4) c = _mm_crc32_u32(c, *(const DWORD *)p);
+    for (; len; p++, len--) c = _mm_crc32_u8(c, *p);
+    return ~c;
+}
+
+static UINT FullChain(UINT w, UINT h)
+{
+    UINT n = 1, m = w > h ? w : h;
+    while (m > 1) { m >>= 1; n++; }
+    return n;
+}
+
+// Levels kept in the cache: down to the last one with both sides >= 4. D3DX re-processes the partial
+// DXT blocks of smaller levels when it loads them, so those it builds itself (from the last cached level,
+// as it did the first time), which keeps the result byte-identical.
+static UINT CachedLevels(UINT w, UINT h)
+{
+    UINT n = 1;
+    while ((w >> n) >= 4 && (h >> n) >= 4) n++;
+    return n;
+}
+
+static void MipPath(wchar_t *out, DWORD c32c, DWORD c32, UINT size)
+{
+    swprintf_s(out, MAX_PATH, L"%ls\\%08lx%08lx_%x.mip", g_mipDir, c32c, c32, size);
+}
+
+// Returns a malloc'ed DDS = source + cached levels 1..n-1 (header updated), or NULL.
+static BYTE *MipLoad(const BYTE *data, UINT size, const TexRec *r, DWORD c32c, DWORD c32, UINT keep, UINT *outSize)
+{
+    wchar_t path[MAX_PATH];
+    MipFileHeader fh;
+    HANDLE h;
+    BYTE *buf = NULL;
+    DWORD got;
+    MipPath(path, c32c, c32, size);
+    h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (ReadFile(h, &fh, sizeof fh, &got, NULL) && got == sizeof fh && fh.magic == MIP_MAGIC && fh.version == MIP_VERSION &&
+        fh.w == r->w && fh.h == r->h && fh.fourcc == r->fourcc && fh.levels == keep && fh.crc32c == c32c &&
+        fh.crc32 == c32 && fh.size == size && fh.bytes < 64 * 1024 * 1024 && (buf = malloc(size + fh.bytes)) != NULL) {
+        if (ReadFile(h, buf + size, fh.bytes, &got, NULL) && got == fh.bytes && Crc32c(buf + size, fh.bytes) == fh.levelsCrc) {
+            memcpy(buf, data, size);
+            *(DWORD *)(buf + 0x08) |= 0x20000;    // DDSD_MIPMAPCOUNT
+            *(DWORD *)(buf + 0x1C) = keep;        // dwMipMapCount
+            *(DWORD *)(buf + 0x6C) |= 0x400008;   // DDSCAPS_MIPMAP | DDSCAPS_COMPLEX
+            *outSize = size + fh.bytes;
+        } else {
+            free(buf);
+            buf = NULL;
+        }
+    }
+    CloseHandle(h);
+    return buf;
+}
+
+// Reads levels 1..n-1 back from the texture D3DX just built and writes them to the cache.
+static BOOL MipStore(void *tex, const TexRec *r, DWORD c32c, DWORD c32, UINT size, UINT keep)
+{
+    void **vt = *(void ***)tex;
+    UINT level, bytes = 0, blockSize = r->fourcc == MAKEFOURCC('D', 'X', 'T', '1') ? 8 : 16;
+    BYTE *blob, *p;
+    MipFileHeader fh;
+    wchar_t path[MAX_PATH], tmp[MAX_PATH];
+    HANDLE h;
+    DWORD put;
+    BOOL ok = TRUE;
+    for (level = 1; level < keep; level++)
+        bytes += DdsLevelBytes(max(1, r->w >> level), max(1, r->h >> level), r->fourcc, 0);
+    if (!(blob = malloc(bytes))) return FALSE;
+    for (p = blob, level = 1; ok && level < keep; level++) {
+        UINT bw = max(1, ((max(1, r->w >> level)) + 3) / 4), bh = max(1, ((max(1, r->h >> level)) + 3) / 4), row;
+        struct { INT pitch; BYTE *bits; } lr;
+        if (((HRESULT (WINAPI *)(void *, UINT, void *, const RECT *, DWORD))vt[19])(tex, level, &lr, NULL, 0x10) != 0) {
+            ok = FALSE; // LockRect(D3DLOCK_READONLY) failed
+            break;
+        }
+        for (row = 0; row < bh; row++, p += bw * blockSize) memcpy(p, lr.bits + row * lr.pitch, bw * blockSize);
+        ((HRESULT (WINAPI *)(void *, UINT))vt[20])(tex, level); // UnlockRect
+    }
+    if (ok) {
+        fh.magic = MIP_MAGIC; fh.version = MIP_VERSION; fh.w = r->w; fh.h = r->h; fh.fourcc = r->fourcc;
+        fh.levels = keep; fh.bytes = bytes; fh.crc32c = c32c; fh.crc32 = c32; fh.size = size;
+        fh.levelsCrc = Crc32c(blob, bytes);
+        MipPath(path, c32c, c32, size);
+        swprintf_s(tmp, MAX_PATH, L"%ls.%lu.tmp", path, GetCurrentThreadId());
+        h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        ok = h != INVALID_HANDLE_VALUE;
+        if (ok) {
+            ok = WriteFile(h, &fh, sizeof fh, &put, NULL) && put == sizeof fh && WriteFile(h, blob, bytes, &put, NULL) && put == bytes;
+            CloseHandle(h);
+            ok = ok && MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING); // never leave a half-written cache file
+            if (!ok) DeleteFileW(tmp);
+        }
+    }
+    free(blob);
+    return ok;
+}
+
+static HRESULT WINAPI TexCreateHook(void *dev, const BYTE *data, UINT size, UINT w, UINT h, UINT mips, DWORD usage,
+                                    DWORD fmt, DWORD pool, DWORD filter, DWORD mipFilter, DWORD colorKey,
+                                    void *info, void *palette, void **tex)
+{
+    void *retSlot = _AddressOfReturnAddress(); // our 15 arguments follow it
+    LARGE_INTEGER a, b;
+    HRESULT hr = E_FAIL;
+    TexRec r = { 0 };
+    UINT full = 0, keep = 0, bigSize = 0;
+    DWORD c32c = 0, c32 = 0;
+    BYTE *big = NULL;
+    int eligible = 0, called = 0;
+    QueryPerformanceCounter(&a);
+    __try {
+        if (size >= 0x80 && *(DWORD *)data == MAKEFOURCC('D', 'D', 'S', ' ')) {
+            UINT lw, lh, left = size - 0x80, lb;
+            r.h = *(DWORD *)(data + 0x0C);
+            r.w = *(DWORD *)(data + 0x10);
+            r.fileMips = *(DWORD *)(data + 0x1C);
+            r.fourcc = (*(DWORD *)(data + 0x50) & 4) ? *(DWORD *)(data + 0x54) : 0; // DDPF_FOURCC
+            r.bits = *(DWORD *)(data + 0x58);
+            for (lw = r.w, lh = r.h; r.dataLevels < 16 && (lb = DdsLevelBytes(lw, lh, r.fourcc, r.bits)) && left >= lb; r.dataLevels++) {
+                left -= lb;
+                if (lw == 1 && lh == 1) { r.dataLevels++; break; }
+                lw = lw > 1 ? lw / 2 : 1;
+                lh = lh > 1 ? lh / 2 : 1;
+            }
+            // fix 8 handles exactly this: a DXT DDS holding only its top level, full chain requested, no resize
+            full = r.w && r.h ? FullChain(r.w, r.h) : 0;
+            keep = r.w && r.h ? CachedLevels(r.w, r.h) : 0;
+            eligible = g_mipFix && IsDxt(r.fourcc) && r.dataLevels == 1 && r.fileMips <= 1 && keep > 1 &&
+                       size == 0x80 + DdsLevelBytes(r.w, r.h, r.fourcc, 0) && mips == (UINT)-1 && w == (UINT)-1 &&
+                       h == (UINT)-1 && fmt == (DWORD)-3 && !(r.w & (r.w - 1)) && !(r.h & (r.h - 1));
+        }
+        if (eligible) {
+            c32c = Crc32c(data, size);
+            c32 = CrcSlicing8(0, data, size);
+            big = MipLoad(data, size, &r, c32c, c32, keep, &bigSize);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        eligible = 0;
+        big = NULL;
+    }
+    if (big) {
+        hr = ((TexCreate_t)TEXCREATE_THUNK)(dev, big, bigSize, w, h, mips, usage, fmt, pool, filter, mipFilter,
+                                            colorKey, info, palette, tex);
+        free(big);
+        if (SUCCEEDED(hr)) { r.cached = 1; called = 1; InterlockedIncrement(&g_mipHits); }
+        else InterlockedIncrement(&g_mipFailures); // retry the normal way below
+    }
+    if (!called)
+        hr = ((TexCreate_t)TEXCREATE_THUNK)(dev, data, size, w, h, mips, usage, fmt, pool, filter, mipFilter, colorKey,
+                                            info, palette, tex);
+    __try {
+        if (SUCCEEDED(hr) && tex && *tex) {
+            void **vt = *(void ***)*tex;
+            DWORD desc[8] = { 0 }; // D3DSURFACE_DESC: Format, Type, Usage, Pool, MultiSampleType, Quality, Width, Height
+            r.levels = ((DWORD (WINAPI *)(void *))vt[13])(*tex);                         // GetLevelCount
+            if (((HRESULT (WINAPI *)(void *, UINT, DWORD *))vt[17])(*tex, 0, desc) == 0) { // GetLevelDesc
+                r.outFmt = desc[0];
+                r.outW = desc[6];
+                r.outH = desc[7];
+            }
+            if (eligible && !r.cached && r.levels == full && r.outFmt == r.fourcc && r.outW == r.w && r.outH == r.h) {
+                if (MipStore(*tex, &r, c32c, c32, size, keep)) InterlockedIncrement(&g_mipStores);
+                else InterlockedIncrement(&g_mipFailures);
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    QueryPerformanceCounter(&b);
+    if (!g_texTiming) return hr;
+    r.ms = (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart;
+    __try { // the caller sprintf'ed "<resource name>:<index>" into its frame at [esp+0x5C] before pushing our 15 args
+        strncpy_s(r.name, sizeof r.name, (const char *)retSlot + 4 + 15 * 4 + 0x5C, _TRUNCATE);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (!TryEnterCriticalSection(&g_texLock)) return hr; // never block the game for a statistic
+    g_tex.n++;
+    g_tex.ticks += b.QuadPart - a.QuadPart;
+    if (r.cached) { g_tex.nCached++; g_tex.ticksCached += b.QuadPart - a.QuadPart; }
+    else if (r.w && r.levels > r.dataLevels) { g_tex.nGen++; g_tex.ticksGen += b.QuadPart - a.QuadPart; }
+    else if (!r.w) { g_tex.nOther++; g_tex.ticksOther += b.QuadPart - a.QuadPart; }
+    if (r.w && r.outW && r.outW != r.w) g_tex.nResized++;
+    if (g_tex.nTop < TEX_TOP || r.ms > g_tex.top[g_tex.nTop - 1].ms) {
+        int i = g_tex.nTop < TEX_TOP ? g_tex.nTop++ : TEX_TOP - 1;
+        for (; i > 0 && g_tex.top[i - 1].ms < r.ms; i--) g_tex.top[i] = g_tex.top[i - 1];
+        g_tex.top[i] = r;
+    }
+    g_tex.last = GetTickCount();
+    LeaveCriticalSection(&g_texLock);
+    return hr;
+}
+
+static DWORD WINAPI TexTimingThread(LPVOID unused)
+{
+    int i;
+    (void)unused;
+    for (;;) {
+        Sleep(500);
+        if (g_waitOff) return 0;
+        EnterCriticalSection(&g_texLock);
+        if (g_tex.n && GetTickCount() - g_tex.last > 2000) {
+            double f = 1000.0 / g_qpf.QuadPart;
+            LONG stores = InterlockedExchange(&g_mipStores, 0), fails = InterlockedExchange(&g_mipFailures, 0);
+            InterlockedExchange(&g_mipHits, 0);
+            Log("textures: %d created in %.1f ms | %d with levels generated: %.1f ms | %d levels from fix 8's cache: %.1f ms | "
+                "%d with all levels in the data: %.1f ms | %d not DDS: %.1f ms | %d resized | fix 8 stored %ld, failed %ld",
+                g_tex.n, g_tex.ticks * f, g_tex.nGen, g_tex.ticksGen * f, g_tex.nCached, g_tex.ticksCached * f,
+                g_tex.n - g_tex.nGen - g_tex.nOther - g_tex.nCached,
+                (g_tex.ticks - g_tex.ticksGen - g_tex.ticksOther - g_tex.ticksCached) * f, g_tex.nOther,
+                g_tex.ticksOther * f, g_tex.nResized, stores, fails);
+            for (i = 0; i < g_tex.nTop; i++) {
+                TexRec *r = &g_tex.top[i];
+                char inFmt[16], outFmt[16];
+                FormatName(inFmt, sizeof inFmt, r->fourcc, r->bits);
+                FormatName(outFmt, sizeof outFmt, r->outFmt, 0);
+                Log("  %7.1f ms  %ux%u %s, header mips %u, %u in data -> %u levels %ux%u %s%s  %s", r->ms, r->w, r->h,
+                    inFmt, r->fileMips, r->dataLevels, r->levels, r->outW, r->outH, outFmt, r->cached ? " (fix 8 cache)" : "",
+                    r->name);
+            }
+            memset(&g_tex, 0, sizeof g_tex);
+        }
+        LeaveCriticalSection(&g_texLock);
+    }
+}
+
+// The cache folder is per d3dx9_35.dll build (PE timestamp), so a different D3DX never reads another's levels.
+static const char *MipCacheDir(void)
+{
+    HMODULE dx = GetModuleHandleA("d3dx9_35.dll");
+    wchar_t local[MAX_PATH], parent[MAX_PATH];
+    IMAGE_NT_HEADERS *nt;
+    int cpu[4];
+    __cpuid(cpu, 1);
+    if (!(cpu[2] & (1 << 20))) return "skipped (CPU without SSE4.2)";
+    if (!dx) return "skipped (d3dx9_35.dll not loaded)";
+    nt = (IMAGE_NT_HEADERS *)((BYTE *)dx + ((IMAGE_DOS_HEADER *)dx)->e_lfanew);
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return "skipped (no LOCALAPPDATA)";
+    swprintf_s(parent, MAX_PATH, L"%ls\\The Witcher\\enginefix_mips", local);
+    swprintf_s(g_mipDir, MAX_PATH, L"%ls\\%08lx", parent, nt->FileHeader.TimeDateStamp);
+    CreateDirs(g_mipDir);
+    return NULL;
+}
+
+static const char *ApplyTextureHook(int mipFix, int timing, const char **mipResult)
+{
+    BYTE call[5] = { 0xE8 };
+    HANDLE t;
+    *mipResult = "disabled in ini";
+    *(DWORD *)(call + 1) = TEXCREATE_THUNK - (TEXCREATE_SITE + 5);
+    if (!BytesMatch(TEXCREATE_SITE, call, 5)) { *mipResult = "skipped (bytes differ)"; return "skipped (bytes differ)"; }
+    if (mipFix) {
+        const char *err = MipCacheDir();
+        if (err) { *mipResult = err; mipFix = 0; }
+        else { *mipResult = "applied"; CrcInitTables(); }
+    }
+    if (!mipFix && !timing) return "disabled in ini";
+    QueryPerformanceFrequency(&g_qpf);
+    g_mipFix = mipFix;
+    g_texTiming = timing;
+    if (timing) {
+        InitializeCriticalSection(&g_texLock);
+        t = CreateThread(NULL, 0, TexTimingThread, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
+    *(DWORD *)(call + 1) = (DWORD)TexCreateHook - (TEXCREATE_SITE + 5);
+    if (!WriteCode(TEXCREATE_SITE, call, 5)) { *mipResult = "FAILED (VirtualProtect)"; return "FAILED (VirtualProtect)"; }
+    return "applied";
+}
+
+// ---- Fix 9: texture wait polls every 250 ms -----------------------------------------
+// After AurWaitForAllTexturesToLoad (module.luc OnLoaded) FUN_006e8170 waits for the texture loader's pending
+// queue with Sleep(250) rounds. Measured on a Temple Quarter -> Trade Quarter transition: 8 textures pending,
+// queue empty after 9.5 ms, 242 ms slept on an empty queue. We make it Sleep(1); each round still processes
+// the finished textures first (FUN_006e8050), so the result is the same, only sooner.
+
+#define TEXWAIT_SLEEP_MS 0x006E81DC // imm32 of push 250 before call ebp (Sleep)
+
+static const char *ApplyTexWaitFix(void)
+{
+    static const BYTE one[] = { 0x01, 0x00, 0x00, 0x00 };
+    if (!BytesMatch(TEXWAIT_SLEEP_MS - 1, kTexWaitSleepOrig, sizeof kTexWaitSleepOrig)) return "skipped (bytes differ)";
+    return WriteCode(TEXWAIT_SLEEP_MS, one, sizeof one) ? "applied" : "FAILED (VirtualProtect)";
+}
+
+// ---- Diagnostics: frame log ------------------------------------------------------------
+// After an alt-tab back the game once stayed laggy until the next alt-tab, with no "window inactive"
+// Sleep(1000) in the log. [debug] frame_log=1 counts frames on the main loop's per-frame path (the call
+// to FUN_0079a600 at 0x007532A5, a singleton getter) and logs every stretch of 3+ s below 30 FPS: frame
+// rate, worst frame, and how much of it the game was in the foreground, had an active caption, or
+// considered itself inactive (0x00C2A324 = 0, the main loop then sleeps 1 s per frame).
+
+#define FRAME_SITE   0x007532A5
+#define FRAME_TARGET 0x0079A600
+#define GAME_ACTIVE  0x00C2A324 // 0: main loop treats the window as inactive
+#define GAME_WINSTAT 0x00EE4754 // WINDOWINFO.dwWindowStatus from the main loop's last GetWindowInfo
+
+typedef void *(__cdecl *FrameTarget_t)(void);
+static LONGLONG g_fLast, g_fSecStart, g_fMax, g_slowStart, g_slowWorst;
+static double g_slowSecs, g_slowFrames, g_slowFg, g_slowCaption, g_slowInactive;
+static int g_fFrames, g_slow;
+
+static void *__cdecl FrameHook(void)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (g_fLast) {
+        LONGLONG dt = now.QuadPart - g_fLast;
+        if (dt > g_fMax) g_fMax = dt;
+        g_fFrames++;
+        if (now.QuadPart - g_fSecStart >= g_qpf.QuadPart) {
+            double secs = (double)(now.QuadPart - g_fSecStart) / g_qpf.QuadPart, fps = g_fFrames / secs;
+            if (fps < 30.0) {
+                HWND fg = GetForegroundWindow();
+                DWORD pid = 0;
+                if (!g_slow) {
+                    g_slow = 1;
+                    g_slowStart = g_fSecStart;
+                    g_slowSecs = g_slowFrames = g_slowFg = g_slowCaption = g_slowInactive = 0;
+                    g_slowWorst = 0;
+                }
+                if (fg) GetWindowThreadProcessId(fg, &pid);
+                g_slowSecs += secs;
+                g_slowFrames += g_fFrames;
+                if (pid == GetCurrentProcessId()) g_slowFg += secs;
+                if (*(DWORD *)GAME_WINSTAT & 1) g_slowCaption += secs; // WS_ACTIVECAPTION
+                if (*(DWORD *)GAME_ACTIVE == 0) g_slowInactive += secs;
+                if (g_fMax > g_slowWorst) g_slowWorst = g_fMax;
+            } else if (g_slow) {
+                g_slow = 0;
+                if (g_slowSecs >= 3.0)
+                    Log("frames: %.1f s at %.1f FPS (worst frame %.0f ms); game in foreground %.0f%%, active caption %.0f%%, "
+                        "treated as inactive %.0f%%", g_slowSecs, g_slowFrames / g_slowSecs, g_slowWorst * 1000.0 / g_qpf.QuadPart,
+                        100 * g_slowFg / g_slowSecs, 100 * g_slowCaption / g_slowSecs, 100 * g_slowInactive / g_slowSecs);
+            }
+            g_fFrames = 0;
+            g_fMax = 0;
+            g_fSecStart = now.QuadPart;
+        }
+    } else {
+        g_fSecStart = now.QuadPart;
+    }
+    g_fLast = now.QuadPart;
+    return ((FrameTarget_t)FRAME_TARGET)();
+}
+
+static const char *ApplyFrameLog(void)
+{
+    BYTE call[5] = { 0xE8 };
+    *(DWORD *)(call + 1) = FRAME_TARGET - (FRAME_SITE + 5);
+    if (!BytesMatch(FRAME_SITE, call, 5)) return "skipped (bytes differ)";
+    QueryPerformanceFrequency(&g_qpf);
+    *(DWORD *)(call + 1) = (DWORD)FrameHook - (FRAME_SITE + 5);
+    return WriteCode(FRAME_SITE, call, 5) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -892,8 +1441,16 @@ static void TryPatch(void)
         Log("fix 5 (faster crc32 for saves): %s", fast || timing ? ApplyCrcFix(fast, timing) : "disabled in ini");
     }
     Log("fix 6 (frame-rate dependent hair damping): %s", FixEnabled("fix6") ? ApplyDanglyFix() : "disabled in ini");
+    Log("fix 7 (warm save files for the first save list): %s", FixEnabled("fix7") ? ApplySaveWarmup() : "disabled in ini");
+    {
+        const char *mip, *hook = ApplyTextureHook(FixEnabled("fix8"), IniFlag("debug", "texture_timing", 0), &mip);
+        Log("fix 8 (cache mip levels D3DX builds on the CPU): %s", mip);
+        if (IniFlag("debug", "texture_timing", 0)) Log("debug: texture timing %s", hook);
+    }
+    Log("fix 9 (texture wait polls every 250 ms): %s", FixEnabled("fix9") ? ApplyTexWaitFix() : "disabled in ini");
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
     if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
+    if (IniFlag("debug", "frame_log", 0)) Log("debug: frame log %s", ApplyFrameLog());
 }
 
 static DWORD WINAPI PatchThread(LPVOID unused)

@@ -40,6 +40,20 @@ static void RefreshThreads(DWORD pid)
     CloseHandle(s);
 }
 
+// module map so non-witcher.exe samples can be attributed: "#mod,base,size,name". Written at the start
+// (so a run is still usable if the game exits early) and again at the end (DLLs loaded later).
+static void WriteModules(FILE *out, DWORD pid)
+{
+    MODULEENTRY32 me = { sizeof me };
+    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    BOOL ok;
+    if (s == INVALID_HANDLE_VALUE) return;
+    for (ok = Module32First(s, &me); ok; ok = Module32Next(s, &me))
+        fprintf(out, "#mod,%08lx,%08lx,%s\n", (DWORD)(DWORD_PTR)me.modBaseAddr, me.modBaseSize, me.szModule);
+    CloseHandle(s);
+    fflush(out);
+}
+
 int main(int argc, char **argv)
 {
     DWORD pid, start, now, interval;
@@ -49,10 +63,11 @@ int main(int argc, char **argv)
 
     if (argc < 4) { fprintf(stderr, "usage: sampler <pid> <seconds> <out.csv> [interval_ms]\n"); return 1; }
     pid = atoi(argv[1]); seconds = atoi(argv[2]); interval = argc > 4 ? atoi(argv[4]) : 2;
-    proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
     if (!proc) { fprintf(stderr, "OpenProcess failed (%lu)\n", GetLastError()); return 1; }
     if (fopen_s(&out, argv[3], "w") != 0) { fprintf(stderr, "cannot open %s\n", argv[3]); return 1; }
 
+    WriteModules(out, pid);
     timeBeginPeriod(1);
     RefreshThreads(pid);
     start = timeGetTime();
@@ -87,19 +102,11 @@ int main(int argc, char **argv)
                 samples++;
             }
         }
+        if (WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) { fprintf(stderr, "process exited\n"); break; }
         Sleep(interval);
     }
     timeEndPeriod(1);
-
-    // module map so non-witcher.exe samples can be attributed: "#mod,base,size,name"
-    {
-        MODULEENTRY32 me = { sizeof me };
-        HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-        BOOL ok;
-        for (ok = Module32First(s, &me); ok; ok = Module32Next(s, &me))
-            fprintf(out, "#mod,%08lx,%08lx,%s\n", (DWORD)(DWORD_PTR)me.modBaseAddr, me.modBaseSize, me.szModule);
-        CloseHandle(s);
-    }
+    WriteModules(out, pid);
     fclose(out);
     printf("%d samples from %d threads in %d s\n", samples, g_nthr, seconds);
     return 0;

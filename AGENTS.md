@@ -60,6 +60,7 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 - `build\sampler.exe <pid> <seconds> <out.csv> [interval_ms]` suspends each recently active thread, records EIP plus an EBP-chain stack, and appends a module map (`#mod` lines). Build it 32-bit (a 32-bit sampler cannot read 64-bit thread contexts).
 - `python -I tools\profiler\timeline.py <csv> <main_tid>`: busy % per 5 s and long busy stretches. The main thread is the process's first thread (earliest start time).
 - `tools\profiler\report.py`: per-thread and per-function summary.
+- `tools\profiler\dxsym.py <csv> <main_tid> <t0_ms>-<t1_ms> ...`: names d3dx9 time with Microsoft's public `d3dx9_35.pdb` through cdb (downloads it into `.\symbols` unless `--sym` points at a local copy; the owner's copy is in `..\witcher-crash-lab\symbols`).
 - `functions.txt` is Ghidra's function list (name and address) for `witcher.exe` 1.5.0.1304; `*_exports.txt` are export tables (`dumpbin /exports`) for nearest-symbol lookups.
 - **Pitfalls:**
   - `witcher.exe` is compiled with frame pointer omission, so stacks usually show only the leaf function, and samples in game code rarely have a caller.
