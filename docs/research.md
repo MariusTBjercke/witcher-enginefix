@@ -27,6 +27,17 @@ For ~54 s the main thread waited in DXVK (`d3d9.dll+0x11f50f`, `SleepConditionVa
 
 Each autosave spends ~0.3-0.5 s in zlib: byte-at-a-time CRC32 `FUN_00800010` (table at `0xBC6610`), `inflate_fast`-like `FUN_00803860`, deflate window code `FUN_007feaf0`. The CRC part is fixed (fix 5). Deflate is zlib 1.1.4; a lower compression level or a newer deflate could cut the rest, but changes the save bytes, so it needs care (the game must still read them, and saves must stay compatible with the unpatched game).
 
+## Sleep polling waits
+
+A static pass over `witcher.exe` for 2007-era habits found the usual suspects already fine (LAA, LFH on the process heap, D3D9 device flags `0x142` without `MULTITHREADED`, effects begun with `D3DXFX_DONOTSAVESTATE`, resource files opened with `FILE_FLAG_SEQUENTIAL_SCAN`, texture loader thread blocking on semaphores). What stands out is waiting by Sleep polling:
+
+- **Texture wait after loads:** `module.luc` `OnLoaded` calls `AurWaitForAllTexturesToLoad`, which sets `0x00CBAE38`; on the next frame `FUN_00588460` calls `FUN_006e8170`, which processes finished textures and, while the loader's pending queue (`[0x00C58C3C]+0x28/+0x2C`, 0x94-byte items) is not empty, does `Sleep(250)` (`0x006E81DB`). Each load can lose up to 250 ms per round.
+- **Resource wait:** `FUN_0081a7a0` polls `FUN_007f5b40` with `Sleep(5)` (`0x0081A8A0`) when the main thread needs a resource that is being loaded asynchronously.
+- **Spinlock:** `FUN_00456040` (and inlined copies around `0x009D8000-0x009D9D00`) does `Sleep(1)` while `InterlockedExchange` fails. Without a raised timer resolution `Sleep(1)` lasts ~15.6 ms (seen in the harness); DXVK may raise it in game.
+- Minor: the main loop runs four console commands as text every frame (`"g_nGetGOCalls 0"` etc.); microseconds, not worth a patch.
+
+`[debug] wait_timing=1` measures these: it swaps the exe's `Sleep` import (`0x00B3F22C`) for a hook that sums requested and actual sleep per caller (return address, main thread or other) and logs one line per burst, and it wraps the texture wait (`0x005884A2`) to log its total time, the number of `Sleep(250)` rounds and when the pending queue actually emptied. Harness-tested; not measured in game yet. If the texture wait regularly sleeps on an empty queue, shortening that `Sleep(250)` is a one-byte fix.
+
 ## Area loading
 
 3-5 s stretches on the main thread inside `d3dx9_35.dll` with no game frame on the stack. Which D3DX work it is cannot be told from export names (see the pitfall in AGENTS.md); Microsoft's public PDB for `d3dx9_35.dll` would settle it. Texture loads go through `FUN_0053f910` → `D3DXCreateTextureFromFileInMemoryEx` (MANAGED pool, all `D3DX_DEFAULT` sizes and filters). The AiO texture pack is all power-of-two DDS with full mip chains, so D3DX does no CPU filtering for it.

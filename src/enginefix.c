@@ -44,6 +44,9 @@
 #include <windows.h>
 #include <stdio.h>
 #include <math.h>
+#include <intrin.h>
+
+#pragma intrinsic(_ReturnAddress)
 
 #define ENGINEFIX_VERSION "0.2.0"
 
@@ -666,6 +669,212 @@ static const char *ApplySaveListTiming(void)
     return "applied";
 }
 
+// ---- Diagnostics: wait timing --------------------------------------------------
+// The engine waits for other threads with Sleep polling loops. [debug] wait_timing=1 swaps the exe's
+// Sleep import for a hook that sums the time per caller (return address) and logs one line per burst.
+// It also wraps the texture wait that AurWaitForAllTexturesToLoad (module.luc OnLoaded) triggers:
+// FUN_00588460 -> FUN_006e8170 polls the texture loader's pending queue with Sleep(250). The hook sleeps
+// those 250 ms in 1 ms slices to see when the queue actually emptied; the game still waits the full time.
+// The hook keeps no locks (Interlocked only): at exit other threads die wherever they are.
+
+#define SLEEP_IAT         0x00B3F22C // witcher.exe import slot for kernel32!Sleep
+#define TEXWAIT_SITE      0x005884A2 // call FUN_006e8170 (wait until the texture loader's queue is empty)
+#define TEXWAIT_FUNC      0x006E8170
+#define TEXWAIT_SLEEP     0x006E81DB // push 250; call ebp (Sleep) inside FUN_006e8170
+#define TEXWAIT_SLEEP_RET 0x006E81E2
+#define TEXLOADER_PTR     0x00C58C3C // texture loader; pending queue (0x94-byte items) begin/end at +0x28/+0x2C
+#define MAX_SLEEP_SITES   64
+
+static const BYTE kTexWaitSleepOrig[] = { 0x68, 0xFA, 0x00, 0x00, 0x00, 0xFF, 0xD5 };
+static const struct { DWORD ret; const char *name; } kSleepNames[] = {
+    { TEXWAIT_SLEEP_RET, "texture wait, Sleep(250)" },
+    { 0x0081A8A4, "resource wait, Sleep(5)" },
+    { 0x00456064, "spinlock, Sleep(1)" },
+    { 0x007536C4, "main loop, window inactive, Sleep(1000)" },
+    { 0x007536B1, "main loop, configured sleep" },
+    { 0x00753694, "main loop, requested sleep" },
+};
+typedef VOID (WINAPI *Sleep_t)(DWORD);
+typedef void (__fastcall *TexWait_t)(void *loader, void *edx); // thiscall, no stack arguments
+typedef struct {
+    volatile LONG key; // return address, | 0x80000000 for the main thread; 0 = free slot
+    volatile LONG calls, first, last;
+    volatile LONGLONG askedMs, ticks, maxTicks;
+} SleepSite;
+static SleepSite g_sleepSites[MAX_SLEEP_SITES];
+static Sleep_t g_realSleep;
+static volatile LONG g_waitOff; // set at process detach: just sleep
+static int g_texWaiting, g_texSleeps;
+static LONGLONG g_texEmptyAt;
+
+static SleepSite *SleepSiteFor(LONG key, int *isNew)
+{
+    int i;
+    *isNew = 0;
+    for (i = 0; i < MAX_SLEEP_SITES; i++) {
+        LONG k = g_sleepSites[i].key;
+        if (k == key) return &g_sleepSites[i];
+        if (k == 0) {
+            k = InterlockedCompareExchange(&g_sleepSites[i].key, key, 0);
+            if (k == 0) { *isNew = 1; return &g_sleepSites[i]; }
+            if (k == key) return &g_sleepSites[i];
+        }
+    }
+    return NULL;
+}
+
+static const char *SleepSiteName(DWORD ret)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof kSleepNames / sizeof kSleepNames[0]); i++)
+        if (kSleepNames[i].ret == ret) return kSleepNames[i].name;
+    return NULL;
+}
+
+static int TexPendingEmpty(void)
+{
+    __try {
+        BYTE *loader = *(BYTE **)TEXLOADER_PTR;
+        DWORD begin = *(DWORD *)(loader + 0x28), end = *(DWORD *)(loader + 0x2C);
+        return begin == 0 || begin == end;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+static int TexPendingCount(void *loader)
+{
+    __try {
+        DWORD begin = *(DWORD *)((BYTE *)loader + 0x28), end = *(DWORD *)((BYTE *)loader + 0x2C);
+        return begin ? (int)((end - begin) / 0x94) : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+static VOID WINAPI WaitSleepHook(DWORD ms)
+{
+    DWORD ret = (DWORD)_ReturnAddress();
+    LARGE_INTEGER a, b;
+    LONGLONG d, m;
+    SleepSite *s;
+    int isMain, isNew;
+
+    if (g_waitOff) { g_realSleep(ms); return; }
+    QueryPerformanceCounter(&a);
+    if (ret == TEXWAIT_SLEEP_RET && g_texWaiting && GetCurrentThreadId() == g_mainThreadId) {
+        // same total sleep as the game's, in 1 ms slices, noting when the pending queue went empty
+        LONGLONG end = a.QuadPart + (LONGLONG)ms * g_qpf.QuadPart / 1000;
+        g_texSleeps++;
+        for (;;) {
+            QueryPerformanceCounter(&b);
+            if (!g_texEmptyAt && TexPendingEmpty()) g_texEmptyAt = b.QuadPart;
+            if (b.QuadPart >= end) break;
+            g_realSleep(1);
+        }
+    } else {
+        g_realSleep(ms);
+        QueryPerformanceCounter(&b);
+    }
+    d = b.QuadPart - a.QuadPart;
+    isMain = GetCurrentThreadId() == g_mainThreadId;
+    s = SleepSiteFor((LONG)(ret | (isMain ? 0x80000000 : 0)), &isNew);
+    if (!s) return;
+    if (InterlockedIncrement(&s->calls) == 1) InterlockedExchange(&s->first, (LONG)GetTickCount());
+    InterlockedExchange(&s->last, (LONG)GetTickCount());
+    InterlockedExchangeAdd64(&s->askedMs, ms);
+    InterlockedExchangeAdd64(&s->ticks, d);
+    while ((m = s->maxTicks) < d && InterlockedCompareExchange64(&s->maxTicks, d, m) != m) {}
+    if (isNew) {
+        const char *name = SleepSiteName(ret);
+        Log("wait: first Sleep(%lu) from 0x%08lX%s%s%s (%s thread %lu)", ms, ret, name ? " (" : "", name ? name : "",
+            name ? ")" : "", isMain ? "main" : "other", GetCurrentThreadId());
+    }
+}
+
+// Logs a site once it has been quiet for 2 s, or every 60 s while it keeps sleeping.
+static DWORD WINAPI WaitTimingThread(LPVOID unused)
+{
+    int i;
+    (void)unused;
+    for (;;) {
+        Sleep(500);
+        if (g_waitOff) return 0;
+        for (i = 0; i < MAX_SLEEP_SITES && g_sleepSites[i].key; i++) {
+            SleepSite *s = &g_sleepSites[i];
+            DWORD now = GetTickCount(), ret = (DWORD)s->key & 0x7FFFFFFF;
+            const char *name;
+            LONG calls;
+            LONGLONG asked, ticks, maxTicks;
+            DWORD span;
+            if (!s->calls || (now - (DWORD)s->last < 2000 && now - (DWORD)s->first < 60000)) continue;
+            span = (DWORD)s->last - (DWORD)s->first;
+            calls = InterlockedExchange(&s->calls, 0);
+            asked = InterlockedExchange64(&s->askedMs, 0);
+            ticks = InterlockedExchange64(&s->ticks, 0);
+            maxTicks = InterlockedExchange64(&s->maxTicks, 0);
+            name = SleepSiteName(ret);
+            Log("wait: %s%s0x%08lX [%s thread]: %ld x Sleep, asked %I64d ms, slept %.1f ms (max %.1f ms) over %.1f s",
+                name ? name : "", name ? " " : "", ret, s->key & 0x80000000 ? "main" : "other", calls, asked,
+                ticks * 1000.0 / g_qpf.QuadPart, maxTicks * 1000.0 / g_qpf.QuadPart, span / 1000.0);
+        }
+    }
+}
+
+static void __fastcall TexWaitHook(void *loader, void *edx)
+{
+    LARGE_INTEGER a, b;
+    int pending = TexPendingCount(loader);
+    QueryPerformanceCounter(&a);
+    g_texSleeps = 0;
+    g_texEmptyAt = 0;
+    g_texWaiting = 1;
+    ((TexWait_t)TEXWAIT_FUNC)(loader, edx);
+    g_texWaiting = 0;
+    QueryPerformanceCounter(&b);
+    if (!g_texSleeps)
+        Log("texture wait (AurWaitForAllTexturesToLoad): %.1f ms, no sleep (%d pending at start)",
+            (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart, pending);
+    else
+        Log("texture wait (AurWaitForAllTexturesToLoad): %.1f ms, %d x Sleep(250), %d pending at start, "
+            "queue empty after %.1f ms (%.1f ms waited on an empty queue)",
+            (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart, g_texSleeps, pending,
+            ((g_texEmptyAt ? g_texEmptyAt : b.QuadPart) - a.QuadPart) * 1000.0 / g_qpf.QuadPart,
+            (b.QuadPart - (g_texEmptyAt ? g_texEmptyAt : b.QuadPart)) * 1000.0 / g_qpf.QuadPart);
+}
+
+static const char *ApplyWaitTiming(void)
+{
+    static char result[128];
+    BYTE call[5] = { 0xE8 };
+    DWORD cur = 0, old;
+    HMODULE mod;
+    char modPath[MAX_PATH], *modName;
+    HANDLE t;
+
+    *(DWORD *)(call + 1) = TEXWAIT_FUNC - (TEXWAIT_SITE + 5);
+    if (!BytesMatch(TEXWAIT_SITE, call, 5) || !BytesMatch(TEXWAIT_SLEEP, kTexWaitSleepOrig, sizeof kTexWaitSleepOrig))
+        return "skipped (bytes differ)";
+    __try { cur = *(DWORD *)SLEEP_IAT; } __except (EXCEPTION_EXECUTE_HANDLER) { cur = 0; }
+    if (!cur || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                    (LPCSTR)cur, &mod))
+        return "skipped (Sleep import slot does not point into a module)";
+    GetModuleFileNameA(mod, modPath, MAX_PATH);
+    modName = strrchr(modPath, '\\');
+    modName = modName ? modName + 1 : modPath;
+    QueryPerformanceFrequency(&g_qpf);
+    g_realSleep = (Sleep_t)cur;
+    if (!VirtualProtect((void *)SLEEP_IAT, 4, PAGE_READWRITE, &old)) return "FAILED (VirtualProtect)";
+    *(DWORD *)SLEEP_IAT = (DWORD)WaitSleepHook;
+    VirtualProtect((void *)SLEEP_IAT, 4, old, &old);
+    *(DWORD *)(call + 1) = (DWORD)TexWaitHook - (TEXWAIT_SITE + 5);
+    if (!WriteCode(TEXWAIT_SITE, call, 5)) return "FAILED (VirtualProtect)";
+    t = CreateThread(NULL, 0, WaitTimingThread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    sprintf_s(result, sizeof result, "applied (Sleep import was %s+0x%lX)", modName, cur - (DWORD)mod);
+    return result;
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -684,6 +893,7 @@ static void TryPatch(void)
     }
     Log("fix 6 (frame-rate dependent hair damping): %s", FixEnabled("fix6") ? ApplyDanglyFix() : "disabled in ini");
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
+    if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
 }
 
 static DWORD WINAPI PatchThread(LPVOID unused)
@@ -762,6 +972,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         CheckLuaLoader();
         t = CreateThread(NULL, 0, PatchThread, NULL, 0, NULL);
         if (t) CloseHandle(t);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        g_waitOff = 1; // our CRT is shutting down: the Sleep hook must not log any more
     }
     return TRUE;
 }
