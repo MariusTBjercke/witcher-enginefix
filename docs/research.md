@@ -85,6 +85,15 @@ Once fix 6 is tested in game, check whether the hair glitch reports are fully ex
 
 - **The Source, locked kidnappers' door:** fixed and verified in game (0.2.0, [the-source-door.md](fixes/the-source-door.md)). The same pattern, an unlock or spawn script that finds its objects with `GetObjectByTag` and runs while their area is not loaded, may explain other one-off "stuck quest" reports. `tools/witcherres.py find` over the extracted modules and `tools/ncsdis.py` on the quest's `OnCompleted` scripts are the way to check one.
 
+## Stuck after a conversation (can walk, cannot act)
+
+Seen once (2026-10-20, Lakeside, chapter 4): after talking to a sleeping NPC, Geralt could walk but not attack, interact or use Space. The log shows two loads before quitting, so loading apparently did not help; after a restart the newest save was fine. So the state lives only in memory and is not saved. No log covers it; next time, take a full dump of the running game before loading or quitting.
+
+What the code shows so far (Ghidra, not verified in game):
+- `FUN_008a15e0` is `AIActionDialogObject` (the action that starts a conversation). It has about 15 abort paths ("***Dialog interrupted due to ...": speaker dead, combat mode, despawn, knockdown/sleep effect on the target, NPC already in a non-interruptable dialog, dialog file failed to load, ...). They go to the engine's log function `FUN_00546030`, which writes nowhere in retail. `[debug] engine_log` (2026-10-20, on in the owner's ini) copies them into our log as `engine: ...` lines, so the next occurrence shows which path ran.
+- For the player it first calls `FUN_008b7350(2)`, `FUN_008b18f0(8,0)` and `FUN_008b18f0(1,0)` (state bits at `creature+0x350` `+0x1e0`/`+0x1e4`; bit 8 = taking part in a dialog, set per speaker in `FUN_00868e00`, cleared in `FUN_00868ca0`), and the "Cannot load dialog" paths return without restoring them.
+- Engine bug: `FUN_008aaf80` is meant to clear the active bits 2, 8, 0x1000 and 0x40000 before a mode switch, but tests `(flags & bit) == 1`, which is only ever true for bit 1. So a mode switch never ends an active dialog bit. Whether that bit blocks player input is not established: `+0x1e0`/`+0x1e4` are read in ~180 places across several structs. `engine_log` also logs every change of the dialog bit (`FUN_008b18f0`) and every time `FUN_008aaf80` leaves one of these bits set. Not fixed on purpose: `FUN_008b7350` (21 callers) relies on it, and fixing it would end dialogs on mode switches the game was tested without. Fix it only if the log ties it to the stuck state.
+
 ## Other observations
 
 - At the 60 FPS cap the main thread is busy 40-50% of the time in Vizima and the swamp; the game is not CPU-bound in normal play.

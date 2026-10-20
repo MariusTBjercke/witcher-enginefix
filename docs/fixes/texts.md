@@ -18,7 +18,7 @@ QoL 2 used StrRef 81 (`GuiLMMExit`, the main menu's Exit). In three languages it
 | 3 | EXIT GAME | EXIT TO MAIN MENU | EXIT GAME |
 | 5 | OPUŚĆ GRĘ | OPUŚĆ GRĘ | WYJDŹ DO PULPITU |
 | 10 | SPIEL VERLASSEN | SPIEL VERLASSEN | ZUM DESKTOP |
-| 11 | QUITTER | QUITTER | QUITTER LE JEU (Illuzio) |
+| 11 | QUITTER | QUITTER → RETOUR AU MENU PRINCIPAL | QUITTER LE JEU (Illuzio) |
 | 12 | SALIR | SALIR DEL JUEGO | SALIR AL ESCRITORIO |
 | 13 | ESCI DAL GIOCO | ABBANDONA PARTITA | ESCI DAL GIOCO |
 | 14 | ВЫХОД | ВЫХОД В МЕНЮ | ВЫХОД ИЗ ИГРЫ |
@@ -26,7 +26,9 @@ QoL 2 used StrRef 81 (`GuiLMMExit`, the main menu's Exit). In three languages it
 | 16 | KILÉPÉS | KILÉPÉS A JÁTÉKBÓL | KILÉPÉS A WINDOWSBA |
 | 21 | 離開遊戲 | 離開回到主選單 | 離開遊戲 |
 
-"Borderless window" uses each language's word for the game's own "Full screen" setting (StrRef 1045: Plein écran, Vollbild, Pełny ekran, Во весь экран, 全螢幕, ...). French "Fenêtre sans bordure" is Illuzio's.
+French is the one language where the mod also relabels the game's own "Exit to main menu" (`ExitButton`): next to "QUITTER LE JEU", a plain "QUITTER" did not say which button goes where. Illuzio's follow-up on Nexus (2026-10-20) suggested "RETOUR AU MENU PRINCIPAL" (the game's own phrase elsewhere is "Revenir au menu principal"). It is the longest pause-menu label (24 characters, the others are at most 19), so check in game that it fits the button.
+
+"Borderless window" uses each language's word for the game's own "Full screen" setting (StrRef 1045: Plein écran, Vollbild, Pełny ekran, Во весь экран, 全螢幕, ...). The French texts ("Fenêtre sans bordure" and the tooltip "Lorsque le mode plein écran est désactivé, ...") are Illuzio's.
 
 ## How the texts reach the screen
 

@@ -2489,6 +2489,169 @@ static const char *ApplyDetail(int level, int hotkey)
     return result;
 }
 
+// ---- Debug: the engine's own messages ([debug] engine_log) ------------------------
+// The engine reports through FUN_00546030(fmt, va_list) (wrappers FUN_005464c0, FUN_00546430), e.g.
+// "***Dialog interrupted due to speaker's death" from AIActionDialogObject (FUN_008a15e0); retail writes
+// these nowhere. We copy them into our log (repeats collapsed, at most ENGINELOG_PER_SEC lines a second).
+// Also logged, for a state where Geralt can walk but not act after a conversation (docs/research.md):
+// changes of the dialog bit (8) in the creature state flags (creature+0x350: +0x1E0 flags, +0x1E4 locked;
+// FUN_008b18f0), and the bits FUN_008aaf80 means to clear before a mode switch but cannot: it tests
+// (flags & bit) == 1, which only holds for bit 1, so bits 2, 8, 0x1000 and 0x40000 stay set. Log only.
+
+#define ENGINELOG_SITE    0x00546030 // void __cdecl FUN_00546030(const char *fmt, va_list args)
+#define ENGINELOG_RESUME  0x00546036 // after mov eax,fs:[0]
+#define STATEBITS_SITE    0x008B18F0 // void __thiscall FUN_008b18f0(creature, DWORD bits, int set)
+#define STATECLEAR_SITE   0x008AAF80 // void __thiscall FUN_008aaf80(creature, DWORD mask)
+#define STATE_RESUME      5          // both start with push ebx; mov ebx,[esp+8]
+#define STATE_UNCLEARED   (2 | 8 | 0x1000 | 0x40000)
+#define ENGINELOG_PER_SEC 30
+
+static const BYTE kEngineLogOrig[]  = { 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF, 0x68, 0xFB, 0x43, 0xAF, 0x00 };
+static const BYTE kStateBitsOrig[]  = { 0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x50, 0x03, 0x00, 0x00 };
+static const BYTE kStateClearOrig[] = { 0x53, 0x8B, 0x5C, 0x24, 0x08, 0xF6, 0xC3, 0x01, 0x56, 0x8B, 0xF1 };
+typedef void (__cdecl *EngineLog_t)(const char *, va_list);
+typedef int (__cdecl *VsnPrintf_t)(char *, size_t, const char *, va_list);
+typedef void (__fastcall *StateBits_t)(void *, void *, DWORD, int);  // thiscall, dummy EDX
+typedef void (__fastcall *StateClear_t)(void *, void *, DWORD);
+static EngineLog_t g_engineLogOriginal;
+static StateBits_t g_stateBitsOriginal;
+static StateClear_t g_stateClearOriginal;
+static VsnPrintf_t g_crtVsnprintf; // msvcr80's, the CRT the engine formats these with
+static CRITICAL_SECTION g_engineLogLock;
+static char g_engineLogLast[512];
+static int g_engineLogRepeats, g_engineLogLines, g_engineLogDropped;
+static DWORD g_engineLogSecond;
+
+static void EngineNote(const char *text)
+{
+    DWORD now = GetTickCount();
+    int repeats = 0, dropped = 0, write = 0;
+    if (!TryEnterCriticalSection(&g_engineLogLock)) return; // diagnostics only: never wait
+    if (strcmp(text, g_engineLogLast) == 0) {
+        g_engineLogRepeats++;
+    } else {
+        repeats = g_engineLogRepeats;
+        g_engineLogRepeats = 0;
+        if (now - g_engineLogSecond >= 1000) {
+            dropped = g_engineLogDropped;
+            g_engineLogDropped = g_engineLogLines = 0;
+            g_engineLogSecond = now;
+        }
+        write = g_engineLogLines < ENGINELOG_PER_SEC;
+        if (write) g_engineLogLines++;
+        else g_engineLogDropped++;
+        // a dropped line is not the last written one, so its repeats are not counted against it
+        strncpy_s(g_engineLogLast, sizeof g_engineLogLast, write ? text : "", _TRUNCATE);
+    }
+    LeaveCriticalSection(&g_engineLogLock);
+    if (repeats) Log("engine: (the line above %d more times)", repeats);
+    if (dropped) Log("engine: (%d lines dropped, more than %d a second)", dropped, ENGINELOG_PER_SEC);
+    if (write) Log("engine: %s", text);
+}
+
+static void __cdecl EngineLogHook(const char *fmt, va_list args)
+{
+    char text[512], *s, *d, *end;
+    text[0] = 0;
+    if (fmt) {
+        __try {
+            g_crtVsnprintf(text, sizeof text - 1, fmt, args);
+            text[sizeof text - 1] = 0;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            strcpy_s(text, sizeof text, "(message could not be formatted)");
+        }
+    }
+    // drop the console colour tags (FUN_005464c0 wraps its text in <c???>...</c>) and line breaks
+    for (s = d = text; *s; ) {
+        if (s[0] == '<' && s[1] == 'c' && (end = strchr(s, '>')) != NULL && end - s <= 6) { s = end + 1; continue; }
+        if (strncmp(s, "</c>", 4) == 0) { s += 4; continue; }
+        *d++ = *s == '\r' || *s == '\n' || *s == '\t' ? ' ' : *s;
+        s++;
+    }
+    while (d > text && d[-1] == ' ') d--;
+    *d = 0;
+    if (text[0]) EngineNote(text);
+    g_engineLogOriginal(fmt, args);
+}
+
+static BOOL StateFlags(void *creature, DWORD *flags, DWORD *locked, DWORD *id)
+{
+    __try {
+        BYTE *stats = *(BYTE **)((BYTE *)creature + 0x350);
+        *flags = *(DWORD *)(stats + 0x1E0);
+        *locked = *(DWORD *)(stats + 0x1E4);
+        *id = *(DWORD *)((BYTE *)creature + 4);
+        return TRUE;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+}
+
+static void __fastcall StateBitsHook(void *creature, void *edx, DWORD bits, int set)
+{
+    DWORD before = 0, after = 0, locked = 0, id = 0;
+    BOOL dialog = (bits & 8) && StateFlags(creature, &before, &locked, &id);
+    g_stateBitsOriginal(creature, edx, bits, set);
+    if (dialog && StateFlags(creature, &after, &locked, &id)) {
+        char text[160];
+        sprintf_s(text, sizeof text, "dialog bit %s on object %08X: flags %X -> %X (locked %X)", set == 1 ? "set" : "cleared",
+                  id, before, after, locked);
+        EngineNote(text);
+    }
+}
+
+static void __fastcall StateClearHook(void *creature, void *edx, DWORD mask)
+{
+    DWORD flags = 0, locked = 0, id = 0, left;
+    BOOL check = (mask & STATE_UNCLEARED) && StateFlags(creature, &flags, &locked, &id);
+    g_stateClearOriginal(creature, edx, mask);
+    left = check ? mask & STATE_UNCLEARED & flags & ~locked : 0;
+    if (left) {
+        char text[200];
+        sprintf_s(text, sizeof text, "FUN_008aaf80 (mask %X) leaves bits %X set on object %08X (flags %X)%s", mask, left, id,
+                  flags, left & 8 ? ": its dialog is not ended" : "");
+        EngineNote(text);
+    }
+}
+
+// A copy of the first len bytes of a function, then a jump back into it at resume.
+static void *Trampoline(const BYTE *orig, size_t len, DWORD resume)
+{
+    BYTE *t = VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!t) return NULL;
+    memcpy(t, orig, len);
+    t[len] = 0xE9;
+    PutRel32(t + len + 1, resume);
+    FlushInstructionCache(GetCurrentProcess(), t, len + 5);
+    return t;
+}
+
+static BOOL JumpFrom(DWORD site, void *target)
+{
+    BYTE jmp[5] = { 0xE9 };
+    *(DWORD *)(jmp + 1) = (DWORD)target - (site + 5);
+    return WriteCode(site, jmp, 5);
+}
+
+static const char *ApplyEngineLog(void)
+{
+    if (!BytesMatch(ENGINELOG_SITE, kEngineLogOrig, sizeof kEngineLogOrig) ||
+        !BytesMatch(STATEBITS_SITE, kStateBitsOrig, sizeof kStateBitsOrig) ||
+        !BytesMatch(STATECLEAR_SITE, kStateClearOrig, sizeof kStateClearOrig))
+        return "skipped (bytes differ)";
+    g_crtVsnprintf = (VsnPrintf_t)GetProcAddress(GetModuleHandleA("msvcr80.dll"), "_vsnprintf");
+    if (!g_crtVsnprintf) return "skipped (no msvcr80 _vsnprintf)";
+    g_engineLogOriginal = (EngineLog_t)Trampoline(kEngineLogOrig, ENGINELOG_RESUME - ENGINELOG_SITE, ENGINELOG_RESUME);
+    g_stateBitsOriginal = (StateBits_t)Trampoline(kStateBitsOrig, STATE_RESUME, STATEBITS_SITE + STATE_RESUME);
+    g_stateClearOriginal = (StateClear_t)Trampoline(kStateClearOrig, STATE_RESUME, STATECLEAR_SITE + STATE_RESUME);
+    if (!g_engineLogOriginal || !g_stateBitsOriginal || !g_stateClearOriginal) return "FAILED (no memory)";
+    InitializeCriticalSection(&g_engineLogLock);
+    if (!JumpFrom(ENGINELOG_SITE, EngineLogHook) || !JumpFrom(STATEBITS_SITE, StateBitsHook) ||
+        !JumpFrom(STATECLEAR_SITE, StateClearHook))
+        return "FAILED (VirtualProtect)";
+    return "applied (engine messages, dialog bit changes, bits FUN_008aaf80 leaves set)";
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -2533,6 +2696,7 @@ static void TryPatch(void)
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
     if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
     if (IniFlag("debug", "frame_log", 0)) Log("debug: frame log %s", ApplyFrameLog());
+    if (IniFlag("debug", "engine_log", 0)) Log("debug: engine log %s", ApplyEngineLog());
 }
 
 static DWORD WINAPI PatchThread(LPVOID unused)

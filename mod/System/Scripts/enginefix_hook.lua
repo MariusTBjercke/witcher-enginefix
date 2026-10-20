@@ -13,7 +13,8 @@
 --    A copy of that button, labelled "Exit game" in the game's text language (TEXTS below; the main menu's
 --    StrRef 81 reads the same as "Exit to main menu" in French, German and Polish), goes right under it.
 --    It asks the same "Are you sure you want to exit?" (1749) and then exits the way the main menu's Exit
---    button does (g_pClientExoApp:ExitProgram).
+--    button does (g_pClientExoApp:ExitProgram). In French, where the game's "Exit to main menu" reads only
+--    "QUITTER", that button is relabelled "RETOUR AU MENU PRINCIPAL".
 --
 -- 4. "Borderless window" in Options > Graphics (QoL 3). A checkbox setting like the game's own (CCheckBoxSetting,
 --    RegisterLuaSetting), greyed out while "Full screen" is ticked. The game stores it with its other settings
@@ -61,10 +62,11 @@ local TEXTS = {
         borderless = "Rahmenloses Fenster",
         borderlessTip = "Ohne Vollbild füllt das Spiel den Bildschirm ohne Rahmen aus.",
     },
-    [11] = { -- French ("QUITTER" is the game's own text for both; these two from Illuzio on Nexus)
+    [11] = { -- French ("QUITTER" is the game's own text for both, so "Exit to main menu" gets mainMenu; all from Illuzio on Nexus)
         exit = "QUITTER LE JEU",
+        mainMenu = "RETOUR AU MENU PRINCIPAL",
         borderless = "Fenêtre sans bordure",
-        borderlessTip = "Sans le mode plein écran, le jeu remplit l'écran sans bordure.",
+        borderlessTip = "Lorsque le mode plein écran est désactivé, le jeu occupe tout l'écran sans bordure.",
     },
     [12] = { -- Spanish ("SALIR DEL JUEGO" is the game's own text for "Exit to main menu")
         exit = "SALIR AL ESCRITORIO",
@@ -241,6 +243,12 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
         tDef.String.String = Text("exit")
         tDef.Scripts = { OnClick = g_GuiLayoutManager:PerformButtonAction(QUIT) }
         tControls[QUIT] = tDef
+        -- Where the game's own "Exit to main menu" reads like quitting (French "QUITTER"), it gets a clearer label.
+        local sMainMenu = Text("mainMenu")
+        if sMainMenu then
+            tControls["ExitButton"].String.StrRef = nil
+            tControls["ExitButton"].String.String = sMainMenu
+        end
     end
 
     local origLoad = CSkinLoader.Load
