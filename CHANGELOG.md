@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- QoL 1: in the over-the-shoulder camera, holding the middle mouse button during active pause turns the camera with the mouse, as in the other cameras (on by default, `[qol] ots_pause_mmb_camera`).
+- Diagnostics: `frame_log` also logs time in Present, how long Sleep(1) lasts, a line after each return to the game (window, display and timer state) and, with `frame_sampler`, profiles the alt-tab lag.
+
 ## 0.3.0
 
 - Fix 7: the first load/save list after a PC restart is no longer slow (3.5-6 s with ~575 saves): the saves are read once in the background at startup.

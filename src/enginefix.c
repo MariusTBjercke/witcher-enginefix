@@ -49,8 +49,11 @@
 // Fix 9: after loads the main thread waits for the texture loader in Sleep(250) rounds (242 ms slept on an
 //   already empty queue in one transition); it now polls with Sleep(1).
 //
+// QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
+//   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
+//
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
-// Diagnostics ([debug]) are off unless the ini turns them on.
+// QoL changes ([qol]) can be turned off the same way. Diagnostics ([debug]) are off unless the ini turns them on.
 
 #include <windows.h>
 #include <stdio.h>
@@ -1745,6 +1748,71 @@ static const char *ApplyFrameLog(void)
     return WriteCode(FRAME_SITE, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
+// In the isometric and hybrid cameras, holding the middle mouse button turns the camera with the mouse, also
+// in active pause (FUN_0041bb60 -> FUN_0041b830 hides the cursor and lets the mouse turn the camera, while
+// g_cAuroraSettings.m_bMMBCameraTurn is on; release -> FUN_0041bbf0 -> FUN_0041b9b0 shows it again). In
+// the over-the-shoulder camera (mode 2) the mouse always turns the camera, so the input handler FUN_00423bd0
+// skips the middle button there (0x00424213: cmp [0x00C500F0],2 / jz). Active pause in OTS shows the cursor
+// (FUN_00444cb0 -> FUN_0041b9b0) and leaves only edge scrolling. We take that jz: during active pause
+// (bit 4 of the pause state at [handler+0x4F0], the value GetActivePauseState returns) the middle button
+// starts and ends the same turn mode as in the other cameras. Unpausing while the button is held is left to
+// the game, which switches OTS mouse look back on by itself.
+
+#define OTSMMB_JZ        0x00424219 // jz 0x00425174 (6 bytes) after cmp [camera mode],2
+#define OTSMMB_SKIP      0x00425174
+#define MMB_DOWN         0x0041BB60 // thiscall (handler, int repeat), ret 4
+#define CAMTURN_END      0x0041B9B0 // thiscall (handler, int unused), ret 4
+#define HANDLER_TURNING  0x348      // byte: 1 while the mouse turns the camera (cursor hidden)
+#define HANDLER_PAUSE    0x4F0      // byte: pause state bits, 4 = active pause
+#define HANDLER_CURSOR_X 0x2A4      // cursor position saved when the turn started
+#define HANDLER_CURSOR_Y 0x2A8
+
+static const BYTE kOtsMmbOrig[] = { 0x0F, 0x84, 0x55, 0x0F, 0x00, 0x00 };
+typedef void (__fastcall *HandlerCall_t)(void *handler, void *edx, int arg);
+static int g_otsMmbTurning, g_otsMmbLogged;
+
+static void __cdecl OtsMmb(BYTE *handler, int state) // state: 0 = released, otherwise pressed (-1 = repeat)
+{
+    __try {
+        BYTE pause = handler[HANDLER_PAUSE];
+        if (g_otsMmbLogged < 3) {
+            g_otsMmbLogged++;
+            Log("qol 1: middle button %s in OTS, pause state %u, camera turn %u", state ? "down" : "up", pause, handler[HANDLER_TURNING]);
+        }
+        if (state) {
+            if ((pause & 4) && !handler[HANDLER_TURNING]) {
+                ((HandlerCall_t)MMB_DOWN)(handler, NULL, state == -1);
+                g_otsMmbTurning = handler[HANDLER_TURNING] != 0;
+            }
+        } else if (g_otsMmbTurning) {
+            g_otsMmbTurning = 0;
+            if (pause & 4) { // still paused: back to the cursor where it was, as the other cameras do
+                ((HandlerCall_t)CAMTURN_END)(handler, NULL, 0);
+                SetCursorPos(*(int *)(handler + HANDLER_CURSOR_X), *(int *)(handler + HANDLER_CURSOR_Y));
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static const char *ApplyOtsMmb(void)
+{
+    BYTE *stub, *p, jz[6] = { 0x0F, 0x84 };
+    if (!BytesMatch(OTSMMB_JZ, kOtsMmbOrig, sizeof kOtsMmbOrig)) return "skipped (bytes differ)";
+    stub = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!stub) return "FAILED (no memory)";
+    p = stub;
+    *p++ = 0x9C; *p++ = 0x60;                                   // pushfd; pushad
+    *p++ = 0x53; *p++ = 0x56;                                   // push ebx (button state); push esi (handler)
+    p = EmitCall(p, (DWORD)OtsMmb);                             // call OtsMmb
+    *p++ = 0x83; *p++ = 0xC4; *p++ = 0x08;                      // add esp,8
+    *p++ = 0x61; *p++ = 0x9D;                                   // popad; popfd
+    *p++ = 0xE9; PutRel32(p, OTSMMB_SKIP); p += 4;              // jmp to where the game skipped to
+    FlushInstructionCache(GetCurrentProcess(), stub, p - stub);
+    *(DWORD *)(jz + 2) = (DWORD)stub - (OTSMMB_JZ + 6);
+    return WriteCode(OTSMMB_JZ, jz, sizeof jz) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -1769,6 +1837,8 @@ static void TryPatch(void)
         if (IniFlag("debug", "texture_timing", 0)) Log("debug: texture timing %s", hook);
     }
     Log("fix 9 (texture wait polls every 250 ms): %s", FixEnabled("fix9") ? ApplyTexWaitFix() : "disabled in ini");
+    Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
+        IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
     if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
     if (IniFlag("debug", "frame_log", 0)) Log("debug: frame log %s", ApplyFrameLog());
