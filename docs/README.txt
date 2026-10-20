@@ -35,9 +35,9 @@ Quality of life:
   "Are you sure?" question.
 
 Optional, off by default:
-- Borderless window: Options > Graphics > "Borderless window (when not full
-  screen)". With full screen off and the desktop resolution, the game fills the
-  screen without a border and alt-tab is instant.
+- Borderless window: Options > Graphics > "Borderless window". With full
+  screen off and the desktop resolution, the game fills the screen without a
+  border and alt-tab is instant.
 - Longer draw distances: [graphics] detail=1 (high) or 2 (ultra) in the ini
   keeps full-detail models, trees, grass, shadows and lights out to 1.5-3x the
   game's distances, on top of the options menu. Costs some frame rate on older

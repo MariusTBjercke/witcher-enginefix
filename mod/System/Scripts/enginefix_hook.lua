@@ -15,8 +15,8 @@
 --    menu's Exit button does (g_pClientExoApp:ExitProgram).
 --
 -- 4. "Borderless window" in Options > Graphics (QoL 3). A checkbox setting like the game's own (CCheckBoxSetting,
---    RegisterLuaSetting); the game stores it with its other settings (registry value EngineFixBorderless), and
---    dinput8.dll reads it at startup, so a change asks for a restart like "Full screen" does.
+--    RegisterLuaSetting), greyed out while "Full screen" is ticked. The game stores it with its other settings
+--    (registry value EngineFixBorderless); dinput8.dll reads it there a few times a second, so it applies at once.
 --
 -- Run at startup by the shared loader testtools.lua.
 
@@ -201,6 +201,21 @@ end
 
 if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting then
     local ok, err = pcall(function()
+        local pFullScreen -- the game's "Full screen" setting, found on first use
+
+        local function FullScreenSetting()
+            if pFullScreen then return pFullScreen end
+            local pManager = CHardwareDependantSettingsManager and CHardwareDependantSettingsManager:Instance()
+            if not pManager then return nil end
+            for i = 0, pManager:GetNumSettings() - 1 do
+                local pSetting = pManager:GetSetting(i)
+                if pSetting and pSetting.GetClassName and pSetting:GetClassName() == "FullScreen" then
+                    pFullScreen = pSetting
+                    return pSetting
+                end
+            end
+        end
+
         CEngineFixBorderlessSetting = makeClass(CCheckBoxSetting)
         CEngineFixBorderlessSetting.new = function(self)
             return CEngineFixBorderlessSetting:create()
@@ -208,14 +223,24 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         CEngineFixBorderlessSetting.GetClassName = function(self) return "EngineFixBorderless" end
         CEngineFixBorderlessSetting.GetCategory = function(self) return "Graphics" end
         CEngineFixBorderlessSetting.GetDefaultValue = function(self) return 0 end
-        -- No talk-table entry for this one; English only. It applies when "Full screen" is off.
-        CEngineFixBorderlessSetting.GetSettingName = function(self) return "Borderless window (when not full screen)" end
+        -- No talk-table entry for these; English only.
+        CEngineFixBorderlessSetting.GetSettingName = function(self) return "Borderless window" end
+        CEngineFixBorderlessSetting.GetSettingTooltip = function(self)
+            if g_tSettingsDescriptions then
+                g_tSettingsDescriptions["EngineFixBorderless"] =
+                    "With full screen off, the game fills the screen without a border, and Alt+Tab is instant."
+            end
+            return "EngineFixBorderless"
+        end
+        -- Greyed out while "Full screen" is ticked (the panel asks again after every checkbox click).
+        CEngineFixBorderlessSetting.IsEnabled = function(self)
+            local pFS = FullScreenSetting()
+            return not (pFS and pFS:GetValue() > 0)
+        end
         CEngineFixBorderlessSetting.ApplyChanges = function(self)
             self:ApplyChangesInternal()
         end
-        CEngineFixBorderlessSetting.NeedsRestart = function(self)
-            return self.lm_ChangedValue ~= nil and self.lm_ChangedValue ~= self.lm_Value
-        end
+        -- No restart: dinput8.dll picks the stored value up within a second.
         local pSetting = CEngineFixBorderlessSetting:new()
         RegisterLuaSetting(pSetting)
         pSetting:Read() -- the game read its settings before this script ran

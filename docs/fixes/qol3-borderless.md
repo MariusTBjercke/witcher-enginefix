@@ -1,6 +1,6 @@
 # QoL 3: borderless window
 
-Options > Graphics > "Borderless window (when not full screen)", off by default.
+Options > Graphics > "Borderless window", off by default. Greyed out while "Full screen" is ticked; takes effect at once.
 
 ## Background
 
@@ -26,16 +26,18 @@ In windowed mode `GetAllVideoModes` (`hwdepsettings.luc`) lists the modes up to 
 
 ## Change
 
-DLL (`ApplyBorderless`), only when the option is on (all original bytes checked first):
+DLL (`ApplyBorderless`), always installed once the original bytes are checked, and inert while the option is off:
 
-- the windowed style becomes `0x82000000`: at the desktop resolution the window covers the primary monitor without a border, and Direct3D stays windowed;
-- the first four sites in the table call `BorderlessFullscreen` instead of the vfunc and get "fullscreen", so the cursor is clipped, the edge camera turn works and the game pauses in the background as in fullscreen. Device creation and the device-lost path still ask the real question;
-- a thread releases the cursor clip (`ClipCursor(NULL)`, which is global) when another window gets the focus.
+- `mov esi,0x02CA0000` at `0x0059334D` becomes `call BlStyleStub`, which loads the windowed style from a variable: `0x02CA0000` (the original) while the option is off, `0x82000000` (popup) while it is on. At the desktop resolution the popup covers the primary monitor without a border, and Direct3D stays windowed;
+- the first four sites in the table call `BorderlessFullscreen` instead of the vfunc. It returns "fullscreen" while the option is on (cursor clip, edge camera turn, pause in the background as in fullscreen) and the real answer while it is off. Device creation and the device-lost path still ask the real question;
+- a thread reads the stored option ~3 times a second. When it changes and the game is windowed at that moment, the thread restyles the game window itself (`SetWindowLongA` + `SetWindowPos` with `SWP_ASYNCWINDOWPOS`, sized like `FUN_005932f0`: client area kept, window at (0, 0)); otherwise the next switch to windowed uses the new style. The thread also releases the cursor clip (`ClipCursor(NULL)`, which is global) when another window gets the focus.
 
-Lua (`enginefix_hook.lua`): `CEngineFixBorderlessSetting`, a `CCheckBoxSetting` in the Graphics category, registered with `RegisterLuaSetting` and read right away (the game reads its settings before the hook runs). The game stores it like its own settings, as the registry value `EngineFixBorderless` under `HKCU\Software\CD Projekt RED\Witcher\Settings`. A change asks for a restart (`NeedsRestart`), as "Full screen" does. The label is English only (no talk-table entry). The DLL reads the value at startup; until the menu has saved it, `[qol] borderless` in the ini decides.
+Lua (`enginefix_hook.lua`): `CEngineFixBorderlessSetting`, a `CCheckBoxSetting` in the Graphics category, registered with `RegisterLuaSetting` and read right away (the game reads its settings before the hook runs). The game stores it like its own settings when OK is pressed, as the registry value `EngineFixBorderless` under `HKCU\Software\CD Projekt RED\Witcher\Settings`. `IsEnabled` is false while the "Full screen" setting's current value (ticked in the panel, not only applied) is on; the panel asks every setting again after each checkbox click (`UpdateSettings`), so the box greys out at once, and it keeps its value for when full screen is turned off. The label and the tooltip (`g_tSettingsDescriptions`, which takes plain text through `processItem`) are English only. Until the menu has saved the option, `[qol] borderless` in the ini decides.
 
-To use it: Options > Graphics, "Full screen" off, "Borderless window" on, the desktop resolution, restart.
+To use it: Options > Graphics, "Full screen" off, "Borderless window" on, the desktop resolution, OK.
 
 ## Verification
 
-Harness (unpacked exe mapped at its addresses): with the option on, the style is `0x82000000` and the four sites call into the DLL and get 1; with it off nothing is patched. Not tested in game yet: the menu entry, the window, alt-tab, cursor clipping, the edge camera turn, the pause in the background, G-Sync.
+Harness (unpacked exe mapped at its addresses, a fake video object that says "windowed"): with the option off the style stub gives `0x02CA0000` and the four sites return the real answer (0); flipping the stored option to on while it runs makes them return 1 within a second; started with it on, the stub gives `0x82000000` and the sites return 1.
+
+In game, 2026-10-20 12:45 (first version, applied at startup): window 3840x2160 at (0, 0), style `0x96000000` (popup, no caption, not topmost), three alt-tabs back at 72 FPS at once, game paused while away. Not tested in game yet: switching without a restart, the greyed-out box, the tooltip, cursor clipping, the edge camera turn, G-Sync.

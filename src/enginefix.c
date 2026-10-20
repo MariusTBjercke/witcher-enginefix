@@ -1863,19 +1863,25 @@ static const char *ApplyOtsMmb(void)
 }
 
 // ---- QoL 3: borderless window ------------------------------------------------------------------
-// In windowed mode (options menu, FullScreen off) FUN_005932f0 gives the window a caption and border (style
-// 0x02CA0000, at 0x0059334D) and sizes it so the client area is the game's resolution, at (0, 0). Fullscreen
-// uses a popup (0x82000000), which we take for windowed too: at the desktop resolution that is a borderless
-// window over the primary monitor, and Direct3D stays windowed (no exclusive mode, instant alt-tab).
-// Some behaviour is tied to fullscreen through [0x00EE47BC]->vfunc+4; these sites treat borderless as
-// fullscreen, so the game feels the same: the cursor is clipped to the screen (FUN_004e2100) and released
-// (FUN_0043f6c0), the camera turns at the screen edge (FUN_004262f0), and the main loop sleeps while the
-// window is inactive (0x007532E7), which is what pauses the game after an alt-tab. Device creation and the
-// device-lost path keep asking the real question. A thread releases the cursor clip when another window
-// gets the focus.
+// In windowed mode (options menu, FullScreen off) FUN_005932f0 (vfunc +8 of the video object [0x00EE47BC])
+// gives the window a caption and border (style 0x02CA0000, "mov esi" at 0x0059334D) and sizes it so the client
+// area is the game's resolution, at (0, 0). Fullscreen uses a popup (0x82000000); borderless uses that for
+// windowed too: at the desktop resolution a window over the primary monitor without border, while Direct3D
+// stays windowed (no exclusive mode, instant alt-tab).
+// Some behaviour is tied to fullscreen through the video object's vfunc +4 (FUN_00592b80, [this+0xAC]); while
+// borderless is on these sites treat it as fullscreen, so the game feels the same: the cursor is clipped to
+// the screen (FUN_004e2100) and released (FUN_0043f6c0), the camera turns at the screen edge (FUN_004262f0),
+// and the main loop sleeps while the window is inactive (0x007532E7), which pauses the game after an alt-tab.
+// Device creation and the device-lost path keep asking the real question.
+// The option (Options > Graphics, enginefix_hook.lua) takes effect at once: the patches are always in, and a
+// thread reads the stored option (registry value EngineFixBorderless, written when the player presses OK)
+// a few times a second. It switches the style FUN_005932f0 will use and, when the game is windowed at that
+// moment, restyles the window itself. It also releases the cursor clip when another window gets the focus.
 
-#define BL_STYLE      0x0059334D // mov esi,0x02CA0000 (windowed style)
-#define GAME_SETTINGS 0x00EE47BC // object whose vfunc+4 says "fullscreen"
+#define BL_STYLE      0x0059334D // mov esi,0x02CA0000 (windowed style), replaced by a call to BlStyleStub
+#define GAME_SETTINGS 0x00EE47BC // the video object; vfunc +4 says "fullscreen"
+#define BL_FRAMED     0x02CA0000
+#define BL_POPUP      0x82000000
 
 typedef struct { DWORD at; BYTE orig[16]; int len; } BlSite; // at: the vfunc load + call to replace
 
@@ -1886,27 +1892,28 @@ static const BlSite kBlSites[] = {
     { 0x007532EF, { 0x8B, 0x42, 0x04, 0xFF, 0xD0 }, 5 },                   // sleep while inactive
 };
 
-// Called instead of the vfunc with ECX = the settings object (thiscall, no stack arguments, so __fastcall
-// fits): fullscreen, or windowed, which is borderless now.
-static int __fastcall BorderlessFullscreen(void *obj)
+static volatile LONG g_blOn;                // borderless wanted now
+static volatile DWORD g_blStyle = BL_FRAMED; // the windowed style FUN_005932f0 sets
+
+typedef int (__fastcall *IsFullscreen_t)(void *, void *); // thiscall without stack arguments
+
+static int RealFullscreen(void *obj)
 {
-    (void)obj;
-    return 1;
+    return ((IsFullscreen_t)(*(void ***)obj)[1])(obj, NULL);
 }
 
-static DWORD WINAPI BorderlessThread(LPVOID unused)
+// Called instead of the vfunc with ECX = the video object (thiscall, no stack arguments, so __fastcall fits).
+static int __fastcall BorderlessFullscreen(void *obj)
 {
-    int wasOurs = 0;
-    (void)unused;
-    for (;;) {
-        HWND fg = GetForegroundWindow();
-        DWORD pid = 0;
-        int ours;
-        Sleep(100);
-        if (fg) GetWindowThreadProcessId(fg, &pid);
-        ours = pid == GetCurrentProcessId();
-        if (wasOurs && !ours) ClipCursor(NULL); // the clip is global; do not keep it after an alt-tab
-        wasOurs = ours;
+    return g_blOn ? 1 : RealFullscreen(obj);
+}
+
+// Replaces "mov esi,0x02CA0000" (5 bytes) with "call BlStyleStub" (5 bytes); flags are not touched.
+static __declspec(naked) void BlStyleStub(void)
+{
+    __asm {
+        mov esi, dword ptr [g_blStyle]
+        ret
     }
 }
 
@@ -1931,19 +1938,82 @@ static int BorderlessWanted(const char **from)
     return IniFlag("qol", "borderless", 0);
 }
 
-static const char *ApplyBorderless(void)
+static void BorderlessSet(int on)
+{
+    g_blStyle = on ? BL_POPUP : BL_FRAMED;
+    InterlockedExchange(&g_blOn, on);
+}
+
+// The game is windowed right now: give its window the new style, sized as FUN_005932f0 does (client area =
+// the current client size, window at (0, 0)). Asynchronous, so this thread never waits for the main thread.
+static void BorderlessRestyle(int on)
+{
+    HWND w = *(HWND *)GAME_HWND;
+    RECT c, r;
+    DWORD style = on ? BL_POPUP : BL_FRAMED;
+    if (!w || !GetClientRect(w, &c)) return;
+    r = c;
+    AdjustWindowRect(&r, style, FALSE);
+    SetWindowLongA(w, GWL_STYLE, (LONG)(style | (GetWindowLongA(w, GWL_STYLE) & WS_VISIBLE)));
+    SetWindowPos(w, HWND_TOP, 0, 0, r.right - r.left, r.bottom - r.top,
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+    if (!on) ClipCursor(NULL);
+}
+
+static int GameWindowed(void)
+{
+    __try {
+        void *video = *(void **)GAME_SETTINGS;
+        return video && !RealFullscreen(video);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+static DWORD WINAPI BorderlessThread(LPVOID unused)
+{
+    int wasOurs = 0, tick = 0;
+    (void)unused;
+    for (;;) {
+        HWND fg;
+        DWORD pid = 0;
+        int ours;
+        Sleep(100);
+        fg = GetForegroundWindow();
+        if (fg) GetWindowThreadProcessId(fg, &pid);
+        ours = pid == GetCurrentProcessId();
+        if (wasOurs && !ours) ClipCursor(NULL); // the clip is global; do not keep it after an alt-tab
+        wasOurs = ours;
+        if (++tick % 3 == 0) { // ~3 times a second
+            const char *from;
+            int on = BorderlessWanted(&from);
+            if (on != g_blOn) {
+                int windowed = GameWindowed();
+                BorderlessSet(on);
+                if (windowed) BorderlessRestyle(on);
+                Log("qol 3: borderless window %s (%s)%s", on ? "on" : "off", from,
+                    windowed ? ", window restyled" : ", takes effect when full screen is off");
+            }
+        }
+    }
+}
+
+static const char *ApplyBorderless(int on)
 {
     static const BYTE style[5] = { 0xBE, 0x00, 0x00, 0xCA, 0x02 };
-    BYTE popup[5] = { 0xBE, 0x00, 0x00, 0x00, 0x82 }, code[8];
+    BYTE code[8], *p;
     size_t i;
     HANDLE t;
     if (!BytesMatch(BL_STYLE, style, sizeof style)) return "skipped (bytes differ)";
     for (i = 0; i < sizeof kBlSites / sizeof kBlSites[0]; i++)
         if (!BytesMatch(kBlSites[i].at, kBlSites[i].orig, kBlSites[i].len)) return "skipped (bytes differ)";
-    if (!WriteCode(BL_STYLE, popup, sizeof popup)) return "FAILED (VirtualProtect)";
+    BorderlessSet(on);
+    code[0] = 0xE8;
+    *(DWORD *)(code + 1) = (DWORD)BlStyleStub - (BL_STYLE + 5);
+    if (!WriteCode(BL_STYLE, code, 5)) return "FAILED (VirtualProtect)";
     for (i = 0; i < sizeof kBlSites / sizeof kBlSites[0]; i++) {
         const BlSite *s = &kBlSites[i];
-        BYTE *p = code;
+        p = code;
         if (s->len == 8) { *p++ = 0x83; *p++ = 0xEC; *p++ = 0x10; } // keep the sub esp,0x10
         *p++ = 0xE8;
         *(DWORD *)p = (DWORD)BorderlessFullscreen - (s->at + (DWORD)(p - code) + 4);
@@ -1951,7 +2021,7 @@ static const char *ApplyBorderless(void)
     }
     t = CreateThread(NULL, 0, BorderlessThread, NULL, 0, NULL);
     if (t) CloseHandle(t);
-    return "applied (takes effect in windowed mode: options menu, full screen off)";
+    return on ? "applied, on (in windowed mode)" : "applied, off (the options menu turns it on)";
 }
 
 // ---- Graphics detail ([graphics] detail) --------------------------------------
@@ -2169,7 +2239,7 @@ static void TryPatch(void)
         const char *from;
         int on = BorderlessWanted(&from);
         Log("qol 3 (borderless window instead of a framed one in windowed mode): %s (set in the %s)",
-            on ? ApplyBorderless() : "off", from);
+            ApplyBorderless(on), from);
     }
     {
         int level = IniInt("graphics", "detail", 0), hotkey = IniFlag("debug", "detail_hotkey", 0);
