@@ -52,6 +52,9 @@
 // Fix 10: during mouse look the hidden cursor is parked at half the GUI size (1365x768 at 4K) taken as window
 //   pixels, so it reappears in the top-left area (active pause, Shift); it is now parked at the window's middle.
 //
+// Fix 11: while the window is inactive the main loop sleeps 1 s per frame (the game pauses in the background), so
+//   after coming back it reacted up to 1 s late; the sleep now ends as soon as the window is in front again.
+//
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
 //
@@ -1797,6 +1800,38 @@ static const char *ApplyCursorParkFix(void)
     return WriteCode(PARK_CALL, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 11: up to 1 s late after coming back to the game ------------------------------------------
+// While the window is inactive (fullscreen without the active caption, or minimized; flag 0x00C2A324 = 0) the
+// main loop sleeps 1 s per frame (push 1000; call [Sleep] at 0x007536BE), which is what keeps the game paused
+// in the background. Back in front, the game first finishes that Sleep, so it reacts up to 1 s late. The
+// sleep now ends as soon as the game window is in front again; in the background it still lasts 1 s.
+
+#define INACTIVE_SLEEP 0x007536BE // call dword ptr [0x00B3F22C] (Sleep), 6 bytes
+
+static void __stdcall InactiveSleep(DWORD ms) // replaces Sleep(1000) (stdcall, one argument)
+{
+    DWORD t0 = GetTickCount();
+    for (;;) {
+        HWND w = *(HWND *)GAME_HWND, fg = GetForegroundWindow();
+        DWORD left, waited = GetTickCount() - t0;
+        if (waited >= ms) return;
+        if (w && fg == w && !IsIconic(w)) return;
+        left = ms - waited;
+        Sleep(left < 10 ? left : 10);
+    }
+}
+
+static const char *ApplyInactiveSleepFix(void)
+{
+    static const BYTE push[5] = { 0x68, 0xE8, 0x03, 0x00, 0x00 }; // push 1000
+    static const BYTE orig[6] = { 0xFF, 0x15, 0x2C, 0xF2, 0xB3, 0x00 };
+    BYTE code[6] = { 0xE8, 0, 0, 0, 0, 0x90 };
+    if (!BytesMatch(INACTIVE_SLEEP - 5, push, sizeof push) || !BytesMatch(INACTIVE_SLEEP, orig, 6))
+        return "skipped (bytes differ)";
+    *(DWORD *)(code + 1) = (DWORD)InactiveSleep - (INACTIVE_SLEEP + 5);
+    return WriteCode(INACTIVE_SLEEP, code, 6) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
 // In the isometric and hybrid cameras, holding the middle mouse button turns the camera with the mouse, also
 // in active pause (FUN_0041bb60 -> FUN_0041b830 hides the cursor and lets the mouse turn the camera, while
@@ -2253,6 +2288,7 @@ static void TryPatch(void)
     }
     Log("fix 9 (texture wait polls every 250 ms): %s", FixEnabled("fix9") ? ApplyTexWaitFix() : "disabled in ini");
     Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
+    Log("fix 11 (up to 1 s late after coming back to the game): %s", FixEnabled("fix11") ? ApplyInactiveSleepFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     {

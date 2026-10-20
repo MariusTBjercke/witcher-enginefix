@@ -231,6 +231,24 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         CEngineFixBorderlessSetting.ApplyChanges = function(self)
             self:ApplyChangesInternal()
         end
+        -- The panel discards unsaved changes of greyed-out settings each time it updates (UpdateSettings), so ticking
+        -- "Full screen" would undo an untick of this box made a moment before. Keep the choice there; Cancel
+        -- (RevertSettings) still discards it.
+        local baseDiscard = CLuaSettingBase and CLuaSettingBase.DiscardChanges
+        local inPanelUpdate = false
+        if baseDiscard and CGuiNewSystemSettingsPanel and CGuiNewSystemSettingsPanel.UpdateSettings then
+            local origUpdate = CGuiNewSystemSettingsPanel.UpdateSettings
+            CGuiNewSystemSettingsPanel.UpdateSettings = function(self, ...)
+                inPanelUpdate = true
+                local okU, errU = pcall(origUpdate, self, unpack(arg))
+                inPanelUpdate = false
+                if not okU then error(errU) end
+            end
+            CEngineFixBorderlessSetting.DiscardChanges = function(self)
+                if inPanelUpdate then return end
+                return baseDiscard(self)
+            end
+        end
         local pSetting = CEngineFixBorderlessSetting:new()
         RegisterLuaSetting(pSetting)
         pSetting:Read() -- the game read its settings before this script ran

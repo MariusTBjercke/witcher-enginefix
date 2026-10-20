@@ -27,6 +27,8 @@ What it fixes:
 - The cursor no longer jumps to the top-left area after the mouse has turned
   the camera (active pause or Shift in the over-the-shoulder camera) at
   resolutions above 1366x768. It comes back in the middle of the screen.
+- After an alt-tab back, the game reacts at once instead of up to a second
+  later.
 
 Quality of life:
 - Over-the-shoulder camera: hold the middle mouse button during active pause
