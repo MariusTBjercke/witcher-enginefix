@@ -75,6 +75,10 @@ PCGamingWiki says high FPS causes "hair physics glitch and crashes at anytime, i
 
 Once fix 6 is tested in game, check whether the hair glitch reports are fully explained by the damping or whether more remains (e.g. jitter at very high FPS).
 
+## Draw distances
+
+`[graphics] detail` ([graphics-detail.md](fixes/graphics-detail.md)) multiplies the LOD, grass, shadow and light distances in `g_cAuroraSettings`; the factors are a first guess until measured in game (Ctrl+F12 with `detail_hotkey`, frame rate and main-thread time per level in the log). Not included yet, each needs a look first: `m_nReflectionRTSize` (512, water reflection resolution; no direct reads in the exe, so probably read once when the render target is created), `m_fGrassDensityModifier` (set by the grass slider, 1.0 at most), `m_fCharacterVisibility` (per location from a 2DA, `FUN_0040b420`, on every area load) and `m_fPlaceableVisibility` (120 from `startup.luc`).
+
 ## Quest bugs
 
 - **The Source, locked kidnappers' door:** fixed and verified in game (0.2.0, [the-source-door.md](fixes/the-source-door.md)). The same pattern, an unlock or spawn script that finds its objects with `GetObjectByTag` and runs while their area is not loaded, may explain other one-off "stuck quest" reports. `tools/witcherres.py find` over the extracted modules and `tools/ncsdis.py` on the quest's `OnCompleted` scripts are the way to check one.

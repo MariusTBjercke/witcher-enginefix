@@ -55,6 +55,9 @@
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
 //
+// Graphics detail ([graphics] detail=1 or 2, off by default): multiplies the engine's LOD, grass, shadow and light
+//   distances (g_cAuroraSettings) on top of what the game and its options menu set.
+//
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
 // QoL changes ([qol]) can be turned off the same way. Diagnostics ([debug]) are off unless the ini turns them on.
 
@@ -132,12 +135,14 @@ static void IniPath(char *path) // MAX_PATH chars
     strcpy_s(slash ? slash + 1 : path, MAX_PATH - (slash ? (slash + 1 - path) : 0), "witcher_enginefix.ini");
 }
 
-static int IniFlag(const char *section, const char *key, int def)
+static int IniInt(const char *section, const char *key, int def)
 {
     char path[MAX_PATH];
     IniPath(path);
-    return GetPrivateProfileIntA(section, key, def, path) != 0;
+    return (int)GetPrivateProfileIntA(section, key, def, path);
 }
+
+static int IniFlag(const char *section, const char *key, int def) { return IniInt(section, key, def) != 0; }
 
 static int FixEnabled(const char *key) { return IniFlag("fixes", key, 1); }
 
@@ -1403,6 +1408,8 @@ typedef struct {
 } FrameStats;
 
 static FrameStats g_fsSec, g_fsSlow, g_fsBack; // this second, the current slow stretch, the 10 s after a return
+static int g_detailStats;                        // [debug] detail_hotkey: log frame statistics per detail level
+static void DetailFrameStats(const FrameStats *s);
 static LONGLONG g_fLast, g_fSecStart, g_awayStart;
 static DWORD g_frameTid, g_samplerTick;
 static int g_slow, g_lagSecs, g_away, g_backOpen, g_devHooked;
@@ -1700,6 +1707,7 @@ static void FrameSecond(LONGLONG now)
         StatsAdd(&g_fsBack, &g_fsSec);
         if (g_fsBack.secs >= 10.0) FocusBackLog("first");
     }
+    if (g_detailStats) DetailFrameStats(&g_fsSec);
     memset(&g_fsSec, 0, sizeof g_fsSec);
     g_fSecStart = now;
 }
@@ -1850,6 +1858,188 @@ static const char *ApplyOtsMmb(void)
     return WriteCode(OTSMMB_JZ, jz, sizeof jz) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Graphics detail ([graphics] detail) --------------------------------------
+// The engine's draw distances live in g_cAuroraSettings (constructor FUN_00401190, object at 0x00C500E8;
+// each member is registered as a console variable by name, "push var; push name" at the addresses below).
+// The options menu (hwdepsettings.luc) only sets some of them, and none of the LOD distances. [graphics]
+// detail=1 (high) or 2 (ultra) multiplies a fixed set by a factor per level: LOD distances (5-45 m by
+// default) for scenery, creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
+// shadow distance (30 m) and shadow-casting lights (4), how far lights stay on (7 x their radius), and the
+// decal and weapon effect distances. The factor applies to whatever the game set: a thread checks the
+// values every 50 ms, and a value that differs from what we wrote was set by the game (constructor,
+// startup.luc, the grass slider), so it becomes the new base. Level 0 writes nothing. The game stores only
+// the menu's slider positions in the registry, never these values, so nothing accumulates across runs.
+// [debug] detail_hotkey=1: Ctrl+F12 cycles the level in game; with frame_log=1 a line every 10 s gives the
+// frame rate and the main thread's time per frame outside Present (the game's own work) for the level.
+
+typedef struct {
+    const char *name; // g_cAuroraSettings member
+    DWORD var, nameStr, push; // the variable, "g_cAuroraSettings.<name>", the registration's "push var"
+    int isInt;
+    float scale[3];   // per level
+    int ok, have;     // verified; base known
+    DWORD base, written;
+} DetailVar;
+
+static DetailVar g_detailVars[] = {
+    { "m_fSceneLODDistancesMultiplier",    0x00C5058C, 0x00B5DF50, 0x00B20C32, 0, { 1, 2, 3 } },
+    { "m_fCreatureLODDistancesMultiplier", 0x00C50588, 0x00B5DF1C, 0x00B20C02, 0, { 1, 2, 3 } },
+    { "m_fSpeedTreeLODDistancesMultiplier", 0x00C50590, 0x00B5DF84, 0x00B20C62, 0, { 1, 2, 3 } },
+    { "m_fGrassVisibilityRange",           0x00C50544, 0x00B5CD38, 0x00B1F972, 0, { 1, 1.5f, 2 } },
+    { "m_fGrassFadeRange",                 0x00C50548, 0x00B5CD64, 0x00B1F9A2, 0, { 1, 1.5f, 2 } },
+    { "m_fMaxShadowDistance",              0x00C50598, 0x00B5DAB0, 0x00B20752, 0, { 1, 2, 3 } },
+    { "m_nMaxShadowLights",                0x00C506C4, 0x00B5BBBC, 0x00B1E652, 1, { 1, 1.5f, 2 } },
+    { "m_fLightsFadeDistanceFactor",       0x00C505E8, 0x00B5FCE4, 0x00B22C72, 0, { 1, 1.5f, 2 } },
+    { "m_fMaxDecalsDist",                  0x00C508E8, 0x00B5EB6C, 0x00B219E2, 0, { 1, 1.5f, 2 } },
+    { "m_fMaxWeaponVisualsDist",           0x00C508E4, 0x00B5EB40, 0x00B219B2, 0, { 1, 1.5f, 2 } },
+};
+#define DETAIL_COUNT (sizeof g_detailVars / sizeof g_detailVars[0])
+
+static const char *const kDetailNames[3] = { "off", "high", "ultra" };
+static volatile LONG g_detailLevel;
+static int g_detailHotkey, g_detailBaseLogs;
+static FrameStats g_fsDetail;
+static LONG g_fsDetailLevel = -1;
+
+static void DetailText(char *buf, size_t n, const DetailVar *v, DWORD raw)
+{
+    if (v->isInt) sprintf_s(buf, n, "%d", (int)raw);
+    else sprintf_s(buf, n, "%g", *(float *)&raw);
+}
+
+static DWORD DetailScaled(const DetailVar *v, int level)
+{
+    DWORD raw = v->base;
+    if (v->isInt) {
+        int i = (int)raw;
+        if (i > 0) raw = (DWORD)(int)(i * v->scale[level] + 0.5f);
+    } else {
+        float f = *(float *)&raw;
+        if (f > 0) { f *= v->scale[level]; raw = *(DWORD *)&f; } // negative = "not set" (grass before the menu applies)
+    }
+    return raw;
+}
+
+// One line per round in which the game set some of the values: "<name> <game's value> -> <ours>, ...".
+static void DetailApply(int level)
+{
+    char s[1024];
+    size_t i, n = 0;
+    for (i = 0; i < DETAIL_COUNT; i++) {
+        DetailVar *v = &g_detailVars[i];
+        DWORD cur, want;
+        int changed;
+        if (!v->ok) continue;
+        cur = *(volatile DWORD *)v->var;
+        changed = !v->have || cur != v->written; // first look, or the game wrote it since
+        if (changed) v->base = cur;
+        want = DetailScaled(v, level);
+        if (changed) {
+            if ((v->have || cur) && n < sizeof s - 128) { // 0 = before the settings constructor ran
+                char a[32], b[32];
+                DetailText(a, sizeof a, v, cur);
+                DetailText(b, sizeof b, v, want);
+                n += sprintf_s(s + n, sizeof s - n, "%s%s %s -> %s", n ? ", " : "", v->name + 2, a, b);
+            }
+            v->have = 1;
+        }
+        if (want != cur) *(volatile DWORD *)v->var = want;
+        v->written = want;
+    }
+    if (n && g_detailBaseLogs < 40) {
+        g_detailBaseLogs++;
+        Log("graphics detail %d: the game set %s", level, s);
+    }
+}
+
+static void DetailLogLevel(int level, const char *why)
+{
+    char s[1024];
+    size_t i, n = 0;
+    s[0] = 0;
+    for (i = 0; i < DETAIL_COUNT; i++) {
+        const DetailVar *v = &g_detailVars[i];
+        char a[32], b[32];
+        if (!v->ok) continue;
+        DetailText(a, sizeof a, v, v->base);
+        DetailText(b, sizeof b, v, DetailScaled(v, level));
+        n += sprintf_s(s + n, sizeof s - n, "%s%s %s -> %s", n ? ", " : "", v->name + 2, a, b);
+    }
+    Log("graphics detail %d (%s)%s: %s", level, kDetailNames[level], why, s);
+}
+
+static DWORD WINAPI DetailThread(LPVOID unused)
+{
+    int level = g_detailLevel, down = 0;
+    (void)unused;
+    for (;;) {
+        Sleep(50);
+        if (g_detailHotkey) {
+            HWND fg = GetForegroundWindow();
+            DWORD pid = 0;
+            int now = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F12) & 0x8000);
+            if (fg) GetWindowThreadProcessId(fg, &pid);
+            if (now && !down && pid == GetCurrentProcessId()) {
+                level = (level + 1) % 3;
+                InterlockedExchange(&g_detailLevel, level);
+                DetailApply(level);
+                DetailLogLevel(level, " (Ctrl+F12)");
+                down = now;
+                continue;
+            }
+            down = now;
+        }
+        DetailApply(level);
+    }
+}
+
+// Called once per second from the frame log with that second's statistics.
+static void DetailFrameStats(const FrameStats *s)
+{
+    LONG level = g_detailLevel;
+    int flush = g_fsDetail.secs >= 10.0 || (level != g_fsDetailLevel && g_fsDetail.secs >= 2.0);
+    if (flush && g_fsDetailLevel >= 0 && g_fsDetail.frames) {
+        char t[640];
+        double work = (g_fsDetail.secs - (double)g_fsDetail.presTicks / g_qpf.QuadPart) * 1000.0 / g_fsDetail.frames;
+        StatsText(t, sizeof t, &g_fsDetail);
+        Log("graphics detail %ld (%s), %.1f s: main thread %.1f ms per frame outside Present; %s", g_fsDetailLevel,
+            kDetailNames[g_fsDetailLevel], g_fsDetail.secs, work, t);
+    }
+    if (flush || level != g_fsDetailLevel) {
+        memset(&g_fsDetail, 0, sizeof g_fsDetail);
+        g_fsDetailLevel = level;
+    }
+    StatsAdd(&g_fsDetail, s);
+}
+
+static const char *ApplyDetail(int level, int hotkey)
+{
+    static char result[96];
+    size_t i;
+    int ok = 0;
+    HANDLE t;
+    BYTE push[5] = { 0x68 };
+    char name[64];
+    for (i = 0; i < DETAIL_COUNT; i++) {
+        DetailVar *v = &g_detailVars[i];
+        sprintf_s(name, sizeof name, "g_cAuroraSettings.%s", v->name);
+        *(DWORD *)(push + 1) = v->var;
+        v->ok = BytesMatch(v->nameStr, (const BYTE *)name, strlen(name) + 1) && BytesMatch(v->push, push, 5);
+        if (v->ok) ok++;
+        else Log("graphics detail: %s skipped (bytes differ)", v->name);
+    }
+    if (!ok) return "skipped (bytes differ)";
+    g_detailLevel = level;
+    g_detailHotkey = hotkey;
+    t = CreateThread(NULL, 0, DetailThread, NULL, 0, NULL);
+    if (!t) return "FAILED (no thread)";
+    CloseHandle(t);
+    g_detailStats = hotkey && IniFlag("debug", "frame_log", 0); // set before the frame log is applied
+    sprintf_s(result, sizeof result, "applied, level %d (%s), %d of %d settings%s", level, kDetailNames[level], ok,
+              (int)DETAIL_COUNT, hotkey ? ", Ctrl+F12 cycles the level" : "");
+    return result;
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -1877,6 +2067,12 @@ static void TryPatch(void)
     Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
+    {
+        int level = IniInt("graphics", "detail", 0), hotkey = IniFlag("debug", "detail_hotkey", 0);
+        if (level < 0 || level > 2) level = 0;
+        Log("graphics detail (LOD, grass, shadow and light distances): %s",
+            level || hotkey ? ApplyDetail(level, hotkey) : "off (detail=0)");
+    }
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
     if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
     if (IniFlag("debug", "frame_log", 0)) Log("debug: frame log %s", ApplyFrameLog());
