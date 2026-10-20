@@ -3,6 +3,7 @@
 ## 0.5.1
 
 - The Ctrl+F12 on-screen message now also shows without DXVK. Windows' own Direct3D 9 rewrites the device's Present function after the first frames, which unhooked the message; it is hooked again when that happens.
+- The "Borderless window" tooltip is shorter.
 
 ## 0.5.0
 

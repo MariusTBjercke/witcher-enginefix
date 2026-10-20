@@ -219,7 +219,7 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         CEngineFixBorderlessSetting.GetSettingTooltip = function(self)
             if g_tSettingsDescriptions then
                 g_tSettingsDescriptions["EngineFixBorderless"] =
-                    "With full screen off, the game fills the screen without a border, and Alt+Tab is instant."
+                    "With full screen off, the game fills the screen without a border."
             end
             return "EngineFixBorderless"
         end
