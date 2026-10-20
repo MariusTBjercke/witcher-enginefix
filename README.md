@@ -1,6 +1,6 @@
 # Witcher Engine Fix
 
-Crash and performance fixes for **The Witcher: Enhanced Edition**. A small DLL that the game loads by itself and that corrects specific engine bugs in memory while the game runs. `witcher.exe` and your saves are never modified.
+Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition**. A small DLL that the game loads by itself and that corrects specific engine bugs in memory while the game runs. `witcher.exe` and your saves are never modified.
 
 ## What it fixes
 

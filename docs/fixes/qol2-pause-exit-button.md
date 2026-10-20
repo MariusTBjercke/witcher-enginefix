@@ -23,4 +23,4 @@ How the panel is built (Steam 1.5.0.1304, `System\Scripts`):
 
 ## Verification
 
-First in-game try: no button, because the definition was added at hook time, before the skin was loaded. Fixed by adding it after `CSkinLoader.Load`; not yet tested in game again. To check: the button's position and look, the confirmation, that the game closes cleanly (and whether it hits the known exit hang), and the panel opened from the main menu (button disabled).
+First in-game try: no button, because the definition was added at hook time, before the skin was loaded. Fixed by adding it after `CSkinLoader.Load`. Verified in game 2026-10-20: the button sits under "Exit to main menu", asks for confirmation and quits; the process was gone 5 s after the click (`pause menu: Exit game` at 11:21:51, exit at 11:21:56), no hang.

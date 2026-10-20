@@ -68,7 +68,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 
-#define ENGINEFIX_VERSION "0.3.0"
+#define ENGINEFIX_VERSION "0.4.0"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -1779,7 +1779,7 @@ static void __stdcall ParkCursor(int x, int y) // replaces a thiscall with the s
 static const char *ApplyCursorParkFix(void)
 {
     BYTE call[5] = { 0xE8 };
-    *(DWORD *)(call + 1) = PARK_TARGET - (PARK_CALL + 5);
+    *(DWORD *)(call + 1) = (DWORD)(PARK_TARGET - (PARK_CALL + 5));
     if (!BytesMatch(PARK_CALL, call, 5)) return "skipped (bytes differ)";
     *(DWORD *)(call + 1) = (DWORD)ParkCursor - (PARK_CALL + 5);
     return WriteCode(PARK_CALL, call, 5) ? "applied" : "FAILED (VirtualProtect)";

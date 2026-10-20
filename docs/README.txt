@@ -1,5 +1,6 @@
 WITCHER ENGINE FIX
-Crash and performance fixes for The Witcher: Enhanced Edition (patch 1.5)
+Crash, performance and quality-of-life fixes for The Witcher: Enhanced Edition
+(patch 1.5)
 https://github.com/MariusTBjercke/witcher-enginefix
 =========================================================================
 
@@ -23,6 +24,15 @@ What it fixes:
 - Hair no longer behaves differently above 60 FPS.
 - "The Source" (Chapter III): the door to Alvin's kidnappers no longer stays
   locked, also in saves that are already stuck there.
+- The cursor no longer jumps to the top-left area after the mouse has turned
+  the camera (active pause or Shift in the over-the-shoulder camera) at
+  resolutions above 1366x768. It comes back in the middle of the screen.
+
+Quality of life:
+- Over-the-shoulder camera: hold the middle mouse button during active pause
+  (Space) to turn the camera with the mouse, as in the other cameras.
+- "Exit game" in the pause menu (Esc), under "Exit to main menu", with the same
+  "Are you sure?" question.
 
 
 INSTALLATION
@@ -38,7 +48,8 @@ game. Each fix should say "applied".
 Files installed:
   System\dinput8.dll                  the engine fix (loaded by the game)
   System\witcher_enginefix.ini        settings
-  System\Scripts\enginefix_hook.lua   the load/save menu and "The Source" door fixes
+  System\Scripts\enginefix_hook.lua   load/save menu fix, "The Source" door fix and
+                                      the pause menu's "Exit game" button
   Data\Override\EngineFix\           the "The Source" door script
   System\Scripts\testtools.lua        shared startup loader (see COMPATIBILITY)
 
@@ -46,9 +57,11 @@ Files installed:
 CONFIGURATION
 -------------
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
-The [debug] section holds diagnostics for development; leave them off.
+The [qol] section holds the quality-of-life changes (on by default). The [debug]
+section holds diagnostics for development; leave them off.
 In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu
-fix's Lua part and "local KIDNAP_DOOR_FIX = false" the "The Source" door fix.
+fix's Lua part, "local KIDNAP_DOOR_FIX = false" the "The Source" door fix and
+"local PAUSE_EXIT_BUTTON = false" the pause menu's "Exit game" button.
 
 
 COMPATIBILITY
