@@ -40,4 +40,9 @@ The binding lives in `System\keybinding.ini` (`SPACE runscript ef_lootall`). Rem
 
 ## Verification
 
-Stub-tested with Lua 5.1 and the real loader (bindkey emulated, 7 scenarios: alone, leftover Quick Loot binding, both installed with and without old bindings, off, another key) and a DLL load test of the log lines. In game: pending.
+Stub-tested with Lua 5.1 and the real loader (bindkey emulated, 7 scenarios: alone, leftover Quick Loot binding, both installed with and without old bindings, off, another key) and a DLL load test of the log lines.
+
+In game, 2026-10-20:
+- Alone (Quick Loot removed, its `SPACE runscript lootall` left in `keybinding.ini`): log `qol 4 (quick loot hotkey): SPACE, bound by ...`, the line became `SPACE runscript ef_lootall`, Take all in the loot window and pause/unpause elsewhere work.
+- Both installed (Quick Loot 1.0.2 put back): log `... Witcher Quick Loot is installed ..., its hotkey is used`, `keybinding.ini` back to `SPACE runscript lootall` with no `ef_lootall` line, same behaviour.
+- Not tried in a shop with this copy. The shop branch is Quick Loot's code unchanged (`IsLootOpen()`), which was checked in a shop for Quick Loot 1.0.1, and the stub test covers it.
