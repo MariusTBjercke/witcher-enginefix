@@ -49,6 +49,9 @@
 // Fix 9: after loads the main thread waits for the texture loader in Sleep(250) rounds (242 ms slept on an
 //   already empty queue in one transition); it now polls with Sleep(1).
 //
+// Fix 10: during mouse look the hidden cursor is parked at half the GUI size (1365x768 at 4K) taken as window
+//   pixels, so it reappears in the top-left area (active pause, Shift); it is now parked at the window's middle.
+//
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
 //
@@ -1748,6 +1751,40 @@ static const char *ApplyFrameLog(void)
     return WriteCode(FRAME_SITE, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 10: cursor appears in the top-left area after mouse look ----------------------------------
+// While the mouse turns the camera (OTS mouse look, middle-button turns), FUN_00419b50 parks the hidden
+// Windows cursor every frame at "the middle" through FUN_00418900 -> FUN_004cc920 (ClientToScreen +
+// SetCursorPos, stdcall x, y). It passes half the GUI size ([0x00EE47B4]+0xA0/+0xA4), which is 1365x768 at
+// 3840x2160, as window pixels, so the cursor is parked at (682, 384) px, the top-left area, and shows up
+// there when it becomes visible (active pause, Shift). At 1366x768 that was the middle. We park it at the
+// middle of the window's client area instead.
+
+#define PARK_CALL   0x00419BE0 // call FUN_00418900 (5 bytes)
+#define PARK_TARGET 0x00418900
+#define GAME_HWND   0x00EE4798 // the window FUN_004cc920 uses
+
+static void __stdcall ParkCursor(int x, int y) // replaces a thiscall with the same stack arguments; ECX unused
+{
+    HWND w = *(HWND *)GAME_HWND;
+    RECT r;
+    POINT p;
+    (void)x; (void)y;
+    if (!w || !GetClientRect(w, &r)) return;
+    p.x = (r.right - r.left) / 2;
+    p.y = (r.bottom - r.top) / 2;
+    ClientToScreen(w, &p);
+    SetCursorPos(p.x, p.y);
+}
+
+static const char *ApplyCursorParkFix(void)
+{
+    BYTE call[5] = { 0xE8 };
+    *(DWORD *)(call + 1) = PARK_TARGET - (PARK_CALL + 5);
+    if (!BytesMatch(PARK_CALL, call, 5)) return "skipped (bytes differ)";
+    *(DWORD *)(call + 1) = (DWORD)ParkCursor - (PARK_CALL + 5);
+    return WriteCode(PARK_CALL, call, 5) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
 // In the isometric and hybrid cameras, holding the middle mouse button turns the camera with the mouse, also
 // in active pause (FUN_0041bb60 -> FUN_0041b830 hides the cursor and lets the mouse turn the camera, while
@@ -1837,6 +1874,7 @@ static void TryPatch(void)
         if (IniFlag("debug", "texture_timing", 0)) Log("debug: texture timing %s", hook);
     }
     Log("fix 9 (texture wait polls every 250 ms): %s", FixEnabled("fix9") ? ApplyTexWaitFix() : "disabled in ini");
+    Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());

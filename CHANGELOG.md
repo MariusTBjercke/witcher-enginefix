@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix 10: after mouse look (active pause or Shift in the over-the-shoulder camera) the cursor came back in the top-left area at resolutions above 1366x768, because the game parked it at half the GUI size taken as pixels. It is now parked at the middle of the window.
 - QoL 1: in the over-the-shoulder camera, holding the middle mouse button during active pause turns the camera with the mouse, as in the other cameras (on by default, `[qol] ots_pause_mmb_camera`).
 - Diagnostics: `frame_log` also logs time in Present, how long Sleep(1) lasts, a line after each return to the game (window, display and timer state) and, with `frame_sampler`, profiles the alt-tab lag.
 

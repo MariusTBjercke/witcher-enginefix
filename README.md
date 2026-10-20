@@ -15,6 +15,7 @@ Crash and performance fixes for **The Witcher: Enhanced Edition**. A small DLL t
 | **Main thread forced onto CPU core 0** | A 2007-era workaround made the game share core 0 with Windows' interrupt work. Windows can now pick a free core. | on |
 | **Hair depends on frame rate** | Hair damping was applied once per frame, so hair moved differently above 60 FPS. It now behaves as at 60 FPS at any frame rate. | on |
 | **Locked door in "The Source"** | Chapter III: Dandelion leads you to Alvin's kidnappers, but their door stays locked. The door is now unlocked when the game failed to, also in saves that are already stuck there. | on |
+| **Cursor jumps to the top-left** | After the mouse has turned the camera (active pause or Shift in the over-the-shoulder camera), the cursor came back in the top-left area at resolutions above 1366x768. It now comes back in the middle of the screen. | on |
 | **Camera in active pause (over-the-shoulder)** | Quality of life: in the over-the-shoulder camera, active pause (Space) shows the cursor and only edge scrolling moved the camera. Hold the middle mouse button to turn it with the mouse, as in the other cameras. | on |
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
@@ -56,6 +57,7 @@ fix6=1   ; hair independent of frame rate
 fix7=1   ; read the saves in the background at startup (first load/save menu after a PC restart)
 fix8=1   ; area loading: cache the mipmaps the game builds on the CPU
 fix9=1   ; shorter wait for the texture loader after a loading screen
+fix10=1  ; cursor comes back in the middle of the screen after mouse look, not in the top-left area
 
 [qol]
 ots_pause_mmb_camera=1   ; over-the-shoulder camera: hold the middle mouse button to turn it in active pause
