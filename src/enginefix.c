@@ -1457,22 +1457,25 @@ static LONG NowUs(void)
 
 // On-screen message (the graphics detail hotkey): drawn on the back buffer right before Present with D3DX's font
 // (d3dx9_35.dll, which the game loads), through raw vtables: IDirect3DDevice9 GetBackBuffer 18, SetRenderTarget 37,
-// GetRenderTarget 38, BeginScene 41, EndScene 42; IDirect3DSurface9 GetDesc 12; ID3DXFont DrawTextA 14,
+// GetRenderTarget 38, BeginScene 41, EndScene 42; IDirect3DSurface9 GetDesc 12; ID3DXFont DrawTextW 15,
 // OnLostDevice 16, OnResetDevice 17. The font's own sprite saves and restores the render states.
-typedef HRESULT (WINAPI *D3DXCreateFontA_t)(void *, INT, UINT, UINT, UINT, BOOL, DWORD, DWORD, DWORD, DWORD, LPCSTR, void **);
+typedef HRESULT (WINAPI *D3DXCreateFontW_t)(void *, INT, UINT, UINT, UINT, BOOL, DWORD, DWORD, DWORD, DWORD, LPCWSTR, void **);
 typedef HRESULT (WINAPI *ComCall_t)(void *);
-typedef INT (WINAPI *FontDrawTextA_t)(void *, void *, LPCSTR, INT, RECT *, DWORD, DWORD);
+typedef INT (WINAPI *FontDrawTextW_t)(void *, void *, LPCWSTR, INT, RECT *, DWORD, DWORD);
 
-static char g_osdText[96];
+static WCHAR g_osdText[96];
+static const WCHAR *volatile g_osdFace = L"Georgia"; // set by OsdShow (Georgia has no Chinese)
 static volatile DWORD g_osdUntil; // GetTickCount when the message is gone; 0 = none
 static void *g_osdFont, *g_osdFontDev;
+static const WCHAR *g_osdFontFace;
 static int g_osdFontH, g_osdFailed;
 
 #define VT(obj, i) ((*(void ***)(obj))[i])
 
-static void OsdShow(const char *text, DWORD ms)
+static void OsdShow(const WCHAR *text, const WCHAR *face, DWORD ms)
 {
-    strcpy_s(g_osdText, sizeof g_osdText, text);
+    wcscpy_s(g_osdText, sizeof g_osdText / sizeof g_osdText[0], text);
+    g_osdFace = face;
     g_osdUntil = (GetTickCount() + ms) | 1;
 }
 
@@ -1487,24 +1490,26 @@ static void OsdDraw(void *dev)
     if (((HRESULT (WINAPI *)(void *, DWORD *))VT(bb, 12))(bb, desc) != 0) goto done;
     h = (int)desc[7] / 30; // ~72 px at 2160
     if (h < 16) h = 16;
-    if (g_osdFont && (g_osdFontDev != dev || g_osdFontH != h)) {
+    if (g_osdFont && (g_osdFontDev != dev || g_osdFontH != h || g_osdFontFace != g_osdFace)) {
         if (g_osdFontDev == dev) ((ComCall_t)VT(g_osdFont, 2))(g_osdFont); // Release; a font of an older device is left alone
         g_osdFont = NULL;
     }
     if (!g_osdFont && !g_osdFailed) {
-        D3DXCreateFontA_t create = NULL;
+        D3DXCreateFontW_t create = NULL;
         HMODULE d3dx = GetModuleHandleA("d3dx9_35.dll");
-        if (d3dx) create = (D3DXCreateFontA_t)GetProcAddress(d3dx, "D3DXCreateFontA");
+        const WCHAR *face = g_osdFace;
+        if (d3dx) create = (D3DXCreateFontW_t)GetProcAddress(d3dx, "D3DXCreateFontW");
         if (!create || create(dev, h, 0, FW_BOLD, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                              DEFAULT_PITCH | FF_ROMAN, "Georgia", &g_osdFont) != 0 || !g_osdFont) {
+                              DEFAULT_PITCH | FF_ROMAN, face, &g_osdFont) != 0 || !g_osdFont) {
             g_osdFont = NULL;
             g_osdFailed = 1;
-            Log("on-screen message: no D3DX font (%s); the message is in the log only", d3dx ? "D3DXCreateFontA failed" : "d3dx9_35.dll not loaded");
+            Log("on-screen message: no D3DX font (%s); the message is in the log only", d3dx ? "D3DXCreateFontW failed" : "d3dx9_35.dll not loaded");
             goto done;
         }
         g_osdFontDev = dev;
         g_osdFontH = h;
-        Log("on-screen message: D3DX font %d px", h);
+        g_osdFontFace = face;
+        Log("on-screen message: D3DX font %S %d px", face, h);
     }
     if (!g_osdFont) goto done;
     alpha = left >= 500 ? 255 : left * 255 / 500; // fade out over the last 0.5 s
@@ -1514,9 +1519,9 @@ static void OsdDraw(void *dev)
         r.left = 0; r.right = (LONG)desc[6];
         r.top = (LONG)desc[7] / 12 + h / 15; r.bottom = r.top + h * 2;
         OffsetRect(&r, h / 15, 0);
-        ((FontDrawTextA_t)VT(g_osdFont, 14))(g_osdFont, NULL, g_osdText, -1, &r, DT_CENTER | DT_TOP | DT_NOCLIP, alpha << 24);
+        ((FontDrawTextW_t)VT(g_osdFont, 15))(g_osdFont, NULL, g_osdText, -1, &r, DT_CENTER | DT_TOP | DT_NOCLIP, alpha << 24);
         OffsetRect(&r, -h / 15, -h / 15);
-        ((FontDrawTextA_t)VT(g_osdFont, 14))(g_osdFont, NULL, g_osdText, -1, &r, DT_CENTER | DT_TOP | DT_NOCLIP,
+        ((FontDrawTextW_t)VT(g_osdFont, 15))(g_osdFont, NULL, g_osdText, -1, &r, DT_CENTER | DT_TOP | DT_NOCLIP,
                                              (alpha << 24) | 0x00F0E6D2);
         ((ComCall_t)VT(dev, 42))(dev); // EndScene
     }
@@ -2295,7 +2300,47 @@ static DetailVar g_detailVars[] = {
 #define DETAIL_COUNT (sizeof g_detailVars / sizeof g_detailVars[0])
 
 static const char *const kDetailNames[3] = { "off", "high", "ultra" };
-static const char *const kDetailTitles[3] = { "Off", "High", "Ultra" };
+// The on-screen message in the game's text language (registry Settings\TextLanguage, ids from Data\languages.2da);
+// English for any other.
+static const struct { int lang; const WCHAR *title; const WCHAR *level[3]; } kDetailTexts[] = {
+    {  3, L"Graphics detail:", { L"Off", L"High", L"Ultra" } }, // English
+    {  5, L"Detale grafiki:", { L"wy\u0142\u0105czone", L"wysokie", L"ultra" } }, // Polish
+    { 10, L"Grafikdetails:", { L"Aus", L"Hoch", L"Ultra" } }, // German
+    { 11, L"D\u00e9tails graphiques :", { L"d\u00e9sactiv\u00e9s", L"\u00e9lev\u00e9s", L"ultra" } }, // French
+    { 12, L"Detalle gr\u00e1fico:", { L"desactivado", L"alto", L"ultra" } }, // Spanish
+    { 13, L"Dettaglio grafico:", { L"disattivato", L"alto", L"ultra" } }, // Italian
+    { 14, L"\u0414\u0435\u0442\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u0433\u0440\u0430\u0444\u0438\u043a\u0438:", { L"\u0432\u044b\u043a\u043b.", L"\u0432\u044b\u0441\u043e\u043a\u0430\u044f", L"\u0443\u043b\u044c\u0442\u0440\u0430" } }, // Russian
+    { 15, L"Detaily grafiky:", { L"vypnuto", L"vysok\u00e9", L"ultra" } }, // Czech
+    { 16, L"Grafikai r\u00e9szletess\u00e9g:", { L"ki", L"magas", L"ultra" } }, // Hungarian
+    { 21, L"\u5716\u5f62\u7d30\u7bc0\uff1a", { L"\u95dc\u9589", L"\u9ad8", L"\u6975\u81f4" } }, // Traditional Chinese
+};
+
+static int TextLanguage(void)
+{
+    HKEY k;
+    char v[16];
+    DWORD type, n = sizeof v - 1;
+    int lang = 3;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\CD Projekt RED\\Witcher\\Settings", 0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS) {
+        if (RegQueryValueExA(k, "TextLanguage", NULL, &type, (BYTE *)v, &n) == ERROR_SUCCESS && type == REG_SZ) {
+            v[n] = 0;
+            lang = atoi(v);
+        }
+        RegCloseKey(k);
+    }
+    return lang;
+}
+
+static void DetailShowLevel(int level)
+{
+    WCHAR msg[96];
+    int i, lang = TextLanguage(), t = 0;
+    for (i = 0; i < (int)(sizeof kDetailTexts / sizeof kDetailTexts[0]); i++)
+        if (kDetailTexts[i].lang == lang) t = i;
+    swprintf_s(msg, sizeof msg / sizeof msg[0], lang == 21 ? L"%s%s   (Ctrl+F12)" : L"%s %s   (Ctrl+F12)", // a full-width colon has its own space
+               kDetailTexts[t].title, kDetailTexts[t].level[level]);
+    OsdShow(msg, lang == 21 ? L"Microsoft JhengHei" : L"Georgia", 2500);
+}
 static volatile LONG g_detailLevel;
 static int g_detailHotkey, g_detailBaseLogs;
 static FrameStats g_fsDetail;
@@ -2380,13 +2425,11 @@ static DWORD WINAPI DetailThread(LPVOID unused)
             int now = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F12) & 0x8000);
             if (fg) GetWindowThreadProcessId(fg, &pid);
             if (now && !down && pid == GetCurrentProcessId()) {
-                char msg[64];
                 level = (level + 1) % 3;
                 InterlockedExchange(&g_detailLevel, level);
                 DetailApply(level);
                 DetailLogLevel(level, " (Ctrl+F12)");
-                sprintf_s(msg, sizeof msg, "Graphics detail: %s   (Ctrl+F12)", kDetailTitles[level]);
-                OsdShow(msg, 2500);
+                DetailShowLevel(level);
                 HookDevice(); // draws the message
                 down = now;
                 continue;

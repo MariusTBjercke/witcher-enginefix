@@ -49,6 +49,11 @@ Optional, off by default:
   PCs. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen.
 
 
+The mod's own texts ("Exit game", "Borderless window", the Ctrl+F12 message)
+follow the game's text language: English, Polish, German, French, Spanish,
+Italian, Russian, Czech, Hungarian and Traditional Chinese.
+
+
 INSTALLATION
 ------------
 1. Copy the "System" and "Data" folders into your game folder, e.g.

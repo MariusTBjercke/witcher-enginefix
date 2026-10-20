@@ -3,6 +3,7 @@
 ## 0.6.0
 
 - QoL 4, quick loot (on by default): Space in the loot window presses "Take all"; in shops and storage it does nothing, everywhere else it still pauses and unpauses. The same as the Witcher Quick Loot mod, now built in. `[qol] quick_loot=0` turns it off, `quick_loot_key` picks another key (that one then only takes all). With Witcher Quick Loot installed as well, Quick Loot's hotkey and settings are used and this one stays unbound, whichever was installed first. A Space binding left behind by a removed Quick Loot (Space without pause) is cleaned up.
+- The mod's own texts follow the game's text language, in all ten languages the game ships (English, Polish, German, French, Spanish, Italian, Russian, Czech, Hungarian, Traditional Chinese): the pause menu's "Exit game" button, "Borderless window" and its tooltip, and the Ctrl+F12 message. In French, German and Polish the button used to read the same as "Exit to main menu" (the game's own text for both). French texts from Illuzio.
 
 ## 0.5.1
 

@@ -23,6 +23,7 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 | `tools/savetoc.py` | Lists a `.TheWitcherSave` table of contents |
 | `tools/witcherres.py` | Game resources: `keys`/`get` (KEY V1.1 + BIFF V1.1 in `Data\`), `erf`/`erfget` (module `.mod`, also a gunzipped save `.sav`), `gff` (dump), `find` (search GFF values) |
 | `tools/ncsdis.py` | NCS disassembler; engine routines named from `System\Scripts\nwscriptdefn.nss` (routine = prototype index) |
+| `tools/check_texts.py` | Checks the translations (`TEXTS` in `enginefix_hook.lua`) against each language's `.tlk` (the game fonts may only hold the characters the game uses): `python -I tools\check_texts.py <game folder>` |
 | `tools/build_ef_ncs.py` | Hand-assembles `mod/Data/Override/EngineFix/ef_q3043_door.ncs` and `ef_lootall.ncs` from the programs in the script (`--check` verifies) |
 
 ## Patch driver rules
@@ -53,6 +54,7 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 - `CGuiInGame:PerformGUIActionsOnGameLoadingEnd` is called by the engine (`FUN_00417e50`) once each loading screen has finished, after area transitions and loaded saves. `enginefix_hook.lua` wraps it to run NWScript fixes with `console("runscript <name>")`; a script reports back with `RunClientLua`.
 - Quest scripting: CDPR scripts compare `GetQuestCurrentPhaseIndex("<quest file>")` with `GetQuestPhaseIndex("<quest file>", "", "<phase Name>")`; phase names are the `Name` fields in the `.qst` (`witcherres.py gff`). `GetObjectByTag` only sees loaded areas, which is how `q3043_unlock` misses its doors.
 - Quick loot (QoL 4) is Witcher Quick Loot's logic under other names (`ef_lootall`, `EngineFix_QuickLoot`), so the two never share a resource or a binding. While `Scripts\quickloot_hook.lua` exists, `enginefix_hook.lua` binds nothing and only unbinds its own `ef_lootall` lines; without it, it also unbinds leftover `runscript lootall` lines. Keep Quick Loot's behaviour and this copy in sync (`docs/fixes/qol4-quick-loot.md`). Lua reads its `[qol]` settings from `witcher_enginefix.ini` itself (`ReadIniSection`).
+- Player-visible texts come from `TEXTS` (Lua) and `kDetailTexts` (DLL) in all ten text languages of the game (`docs/fixes/texts.md`); a new text needs all ten, then `tools/check_texts.py`. Lua strings for the GUI are UTF-8, like the `.tlk` strings.
 - `makeClass` (in `global.luc`) uses an `__index` function that looks methods up in the class table at call time, so replacing class methods affects existing instances.
 - Lua 5.0: varargs via `arg`, `pcall` returns status plus results, `os.clock`/`os.date` exist, the working directory is `System\`.
 - Lua 5.0: closures created in a `for` loop share the loop variables (5.1+ gives each iteration its own), so make them in a helper function. Getting this wrong in the `CListControl` wrappers broke the main menu (it opened on the adventure panel with dead clicks).
@@ -77,4 +79,5 @@ The owner's Ghidra project `test` has `/witcher1/witcher.exe.unpacked.exe` (Stea
 
 - In Git Bash, backslashes inside Python heredocs get mangled; write C or Python with backslashes through a file editor instead of `sed`/heredoc substitutions.
 - Executables built in the temp folder run from PowerShell (`& path`), not reliably through `cmd /c`.
+- The Edit tool turns `\uXXXX` in new text into the character itself. For the `\u` escapes in `src/enginefix.c` (MSVC reads a file without BOM in the ANSI code page), write them with a script and check the file stays ASCII.
 - `vcvars*.bat` may change the working directory; `cd /d %~dp0` after calling it.

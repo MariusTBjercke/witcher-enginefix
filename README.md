@@ -25,6 +25,8 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
 
+The mod's own texts (the "Exit game" button, "Borderless window" and the Ctrl+F12 message) follow the game's text language, in all ten languages the game ships: English, Polish, German, French, Spanish, Italian, Russian, Czech, Hungarian and Traditional Chinese. Corrections are welcome ([how](docs/fixes/texts.md#adding-or-fixing-a-translation)).
+
 ## Requirements
 
 - The Witcher: Enhanced Edition, patch **1.5**. Tested on **Steam 1.5.0.1304** (Windows 11, DXVK).

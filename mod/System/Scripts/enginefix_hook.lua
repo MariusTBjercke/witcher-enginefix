@@ -10,9 +10,10 @@
 --    Data\Override\EngineFix\ef_q3043_door.ncs, which unlocks the door only when the quest is at
 --    that step and the game failed to unlock it (see that script's .nss).
 -- 3. "Exit game" in the pause menu (QoL). The in-game system panel (Esc) only had "Exit to main menu".
---    A copy of that button, labelled with the main menu's "Exit game" text (StrRef 81), goes right
---    under it. It asks the same "Are you sure you want to exit?" (1749) and then exits the way the main
---    menu's Exit button does (g_pClientExoApp:ExitProgram).
+--    A copy of that button, labelled "Exit game" in the game's text language (TEXTS below; the main menu's
+--    StrRef 81 reads the same as "Exit to main menu" in French, German and Polish), goes right under it.
+--    It asks the same "Are you sure you want to exit?" (1749) and then exits the way the main menu's Exit
+--    button does (g_pClientExoApp:ExitProgram).
 --
 -- 4. "Borderless window" in Options > Graphics (QoL 3). A checkbox setting like the game's own (CCheckBoxSetting,
 --    RegisterLuaSetting), greyed out while "Full screen" is ticked. The game stores it with its other settings
@@ -38,6 +39,70 @@ local function Log(sText)
         file:write((os.date and os.date("%H:%M:%S ") or "") .. sText .. "\n")
         file:close()
     end
+end
+
+-- The mod's own texts in each text language of the game (ids from Data\languages.2da), UTF-8 like the game's
+-- talk tables (dialog_<id>.tlk), which is what the GUI expects of a Lua string. Words follow the game's own
+-- ("Full screen" = StrRef 1045). Every character must exist in that language's .tlk, or its font may lack it:
+-- python -I tools\check_texts.py <game folder> checks that. Other languages get English.
+local TEXTS = {
+    [3]  = { -- English
+        exit = "EXIT GAME",
+        borderless = "Borderless window",
+        borderlessTip = "With full screen off, the game fills the screen without a border.",
+    },
+    [5]  = { -- Polish ("OPUŚĆ GRĘ" is the game's own text for both exit buttons)
+        exit = "WYJDŹ DO PULPITU",
+        borderless = "Okno bez ramki",
+        borderlessTip = "Gdy pełny ekran jest wyłączony, gra wypełnia ekran bez ramki.",
+    },
+    [10] = { -- German ("SPIEL VERLASSEN" is the game's own text for both)
+        exit = "ZUM DESKTOP",
+        borderless = "Rahmenloses Fenster",
+        borderlessTip = "Ohne Vollbild füllt das Spiel den Bildschirm ohne Rahmen aus.",
+    },
+    [11] = { -- French ("QUITTER" is the game's own text for both; these two from Illuzio on Nexus)
+        exit = "QUITTER LE JEU",
+        borderless = "Fenêtre sans bordure",
+        borderlessTip = "Sans le mode plein écran, le jeu remplit l'écran sans bordure.",
+    },
+    [12] = { -- Spanish ("SALIR DEL JUEGO" is the game's own text for "Exit to main menu")
+        exit = "SALIR AL ESCRITORIO",
+        borderless = "Ventana sin bordes",
+        borderlessTip = "Sin pantalla completa, el juego ocupa toda la pantalla sin bordes.",
+    },
+    [13] = { -- Italian
+        exit = "ESCI DAL GIOCO",
+        borderless = "Finestra senza bordi",
+        borderlessTip = "Senza la modalità a tutto schermo, il gioco riempie lo schermo senza bordi.",
+    },
+    [14] = { -- Russian
+        exit = "ВЫХОД ИЗ ИГРЫ",
+        borderless = "Окно без рамки",
+        borderlessTip = "Без полноэкранного режима игра занимает весь экран без рамки.",
+    },
+    [15] = { -- Czech
+        exit = "UKONČIT HRU",
+        borderless = "Okno bez okraje",
+        borderlessTip = "Bez celé obrazovky hra vyplní obrazovku bez okraje.",
+    },
+    [16] = { -- Hungarian ("KILÉPÉS A JÁTÉKBÓL" is the game's own text for "Exit to main menu")
+        exit = "KILÉPÉS A WINDOWSBA",
+        borderless = "Keret nélküli ablak",
+        borderlessTip = "Teljes képernyő nélkül a játék keret nélkül tölti ki a képernyőt.",
+    },
+    [21] = { -- Traditional Chinese
+        exit = "離開遊戲",
+        borderless = "無邊界視窗",
+        borderlessTip = "關閉全螢幕時，遊戲會以無邊界視窗佔滿整個螢幕。",
+    },
+}
+
+-- One of the TEXTS in the game's current text language.
+local function Text(sKey)
+    local ok, nLanguage = pcall(function() return g_pClientExoApp:GetClientTextLanguage() end)
+    local tTexts = ok and TEXTS[nLanguage] or TEXTS[3]
+    return tTexts[sKey] or TEXTS[3][sKey]
 end
 
 -- Reads one [section] of System\witcher_enginefix.ini (dinput8.dll's settings) as { key = "value" }, keys in
@@ -171,7 +236,9 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
         if tDef.HotSpot and tDef.HotSpot.Position then
             tDef.HotSpot.Position.Y = tDef.HotSpot.Position.Y + STEP
         end
-        tDef.String.StrRef = "GuiLMMExit"
+        -- A literal label instead of a StrRef (defineGUIPanel passes String.String to InitTextLayer as is).
+        tDef.String.StrRef = nil
+        tDef.String.String = Text("exit")
         tDef.Scripts = { OnClick = g_GuiLayoutManager:PerformButtonAction(QUIT) }
         tControls[QUIT] = tDef
     end
@@ -239,12 +306,12 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         CEngineFixBorderlessSetting.GetClassName = function(self) return "EngineFixBorderless" end
         CEngineFixBorderlessSetting.GetCategory = function(self) return "Graphics" end
         CEngineFixBorderlessSetting.GetDefaultValue = function(self) return 0 end
-        -- No talk-table entry for these; English only.
-        CEngineFixBorderlessSetting.GetSettingName = function(self) return "Borderless window" end
+        -- No talk-table entry for these: the texts come from TEXTS (the game's own settings return
+        -- g_TalkTable:GetSimpleString, the raw UTF-8 of the .tlk, through the same path).
+        CEngineFixBorderlessSetting.GetSettingName = function(self) return Text("borderless") end
         CEngineFixBorderlessSetting.GetSettingTooltip = function(self)
             if g_tSettingsDescriptions then
-                g_tSettingsDescriptions["EngineFixBorderless"] =
-                    "With full screen off, the game fills the screen without a border."
+                g_tSettingsDescriptions["EngineFixBorderless"] = Text("borderlessTip")
             end
             return "EngineFixBorderless"
         end
