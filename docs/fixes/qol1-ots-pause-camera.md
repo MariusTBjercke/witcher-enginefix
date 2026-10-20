@@ -23,4 +23,4 @@ Outside active pause the middle button does exactly what it did before (nothing 
 
 ## Verification
 
-Harness (the original `jz` at `0x00424219` behind `xor eax,eax`, fake `FUN_0041bb60`/`FUN_0041b9b0` that set/clear `+0x348` and count calls; dinput8.dll loaded): not paused → nothing; active pause → down starts the turn, a repeat does nothing more, up ends it; unpaused while held → up leaves the turn flag alone; already turning → nothing; another pause bit (1) → nothing; the skip target is reached in every case. Not yet tested in game.
+Harness (the original `jz` at `0x00424219` behind `xor eax,eax`, fake `FUN_0041bb60`/`FUN_0041b9b0` that set/clear `+0x348` and count calls; dinput8.dll loaded): not paused → nothing; active pause → down starts the turn, a repeat does nothing more, up ends it; unpaused while held → up leaves the turn flag alone; already turning → nothing; another pause bit (1) → nothing; the skip target is reached in every case. Verified in game 2026-10-20 (owner: works; log: `pause state 4, camera turn 0` on press, `camera turn 1` on release).
