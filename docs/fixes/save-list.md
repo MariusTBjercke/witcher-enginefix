@@ -2,7 +2,7 @@
 
 Opening the load (or save) menu got slower the more saves there were: 51 saves took 0.26 s, 531 saves took 14.1 s.
 
-The journal fills its tabs (quests, characters, bestiary, ...) the same way (`gui_new_diarypanel.luc` `CGuiNewDiaryPanel:OnTabSelect` calls `AddListItem` per entry), so since 2026-10-20 the batching covers it too: while `SetType` or `OnTabSelect` runs, `AddListItem` adds without the per-item `Refresh`, and every list left dirty is refreshed once at the end. The journal's `OnTabSelect` ends with `ClickItem` on the last selected entry, so pending refreshes run right before that. A first version refreshed a dirty list before any other `CListControl` method instead; the save list calls other list methods for every save, so that made it quadratic again (643 saves: 31 s). Journal not measured in game yet.
+The journal fills its tabs (quests, characters, bestiary, ...) the same way (`gui_new_diarypanel.luc` `CGuiNewDiaryPanel:OnTabSelect` calls `AddListItem` per entry), so since 2026-10-20 the batching covers it too: while `SetType` or `OnTabSelect` runs, `AddListItem` adds without the per-item `Refresh`, and every list left dirty is refreshed once at the end. The journal's `OnTabSelect` ends with `ClickItem` on the last selected entry, so pending refreshes run right before that. A first version refreshed a dirty list before any other `CListControl` method instead; the save list calls other list methods for every save, so that made it quadratic again (643 saves: 31 s). In game (2026-10-20, Chapter III save): tabs of 19-36 entries fill in 24-62 ms with one refresh of 0-2 ms; the per-entry refreshes would have added roughly 35 ms per tab at that size, growing with the square of the number of entries.
 
 ## How the list is built
 

@@ -10,4 +10,6 @@ The `call [Sleep]` (6 bytes) becomes `call InactiveSleep; nop`. `InactiveSleep` 
 
 ## Verification
 
-Harness: with no game window in front the call takes 1000 ms; with the game window in front it returns at once (0 ms). Not tested in game yet.
+Harness: with no game window in front the call takes 1000 ms; with the game window in front it returns at once (0 ms).
+
+In game, 2026-10-20 (`frame_log`, time from the game window getting the focus): 16 alt-tabs in the main menu and in Vizima, borderless and windowed. The next frame came 3-8 ms after the focus and was presented after 4-20 ms, about one frame, in both modes. Borderless still feels a little slower to switch than the framed window; that is outside the game: the borderless window covers the screen, so Windows presents it directly (with G-Sync), and an alt-tab switches the presentation mode, while the framed window (larger than the screen) is always composed.

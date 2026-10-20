@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Graphics detail (optional, off by default): `[graphics] detail=1` (high) or `2` (ultra) in the ini multiplies the engine's LOD distances for scenery, creatures and trees, grass range, shadow distance and shadow-casting lights, how far lights stay on, decal and weapon effect distances, and the water reflection texture size, on top of what the options menu sets. No debug mode or console commands. At 4K on a modern PC ultra cost under 0.5 ms per frame.
+- QoL 3: "Borderless window" in Options > Graphics (off by default). With full screen off, the game fills the screen without a border and alt-tab is instant, while the cursor clip, the edge camera turn and the pause in the background work as in full screen. Takes effect at once; greyed out while full screen is on.
+- Fix 11: after an alt-tab back the game reacted up to 1 s late (it finished a 1 s background sleep first); it now reacts at once and still pauses in the background.
+- The journal's tabs fill like the load/save list: one refresh per list instead of one per entry.
+- Diagnostics: `[debug] detail_hotkey` (Ctrl+F12 cycles the detail level; with `frame_log`, frame rate and main-thread time per level), and `frame_log` logs the time from the game window getting the focus to the next frame.
+
 ## 0.4.0
 
 - Fix 10: after mouse look (active pause or Shift in the over-the-shoulder camera) the cursor came back in the top-left area at resolutions above 1366x768, because the game parked it at half the GUI size taken as pixels. It is now parked at the middle of the window.

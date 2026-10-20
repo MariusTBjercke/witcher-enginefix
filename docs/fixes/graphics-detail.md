@@ -21,7 +21,7 @@ What sets what (Steam 1.5.0.1304):
 | `m_fLightsFadeDistanceFactor` `0xC505E8` | 7 | never | `FUN_0070ca90`: a light is on within its radius × this |
 | `m_fMaxDecalsDist` `0xC508E8` | 80 | `startup.luc` 80 | decals (blood etc.) |
 | `m_fMaxWeaponVisualsDist` `0xC508E4` | 40 | `startup.luc` 40 | weapon effects |
-| `m_nReflectionRTSize` `0xC5051C` | 512 | never | no direct reads (read through a pointer); `CAurScene:RecreateReflectionRTs` (Lua binding `FUN_005d2bb0`, vtable +0x18C) rebuilds the reflection targets, so the size is meant to change. Added 2026-10-20, not tested in game yet |
+| `m_nReflectionRTSize` `0xC5051C` | 512 | never | no direct reads (read through a pointer); `CAurScene:RecreateReflectionRTs` (Lua binding `FUN_005d2bb0`, vtable +0x18C) rebuilds the reflection targets, so the size is meant to change. Added 2026-10-20; water in the swamp looked fine at ultra, no visible difference measured |
 
 The registry (`HKCU\Software\CD Projekt RED\Witcher\Settings`) stores only the menu's slider positions (`GrassQuality`, `ShadowsQuality` ...), never these values.
 
