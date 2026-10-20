@@ -2494,7 +2494,7 @@ static const char *ApplyDetail(int level, int hotkey)
 // "***Dialog interrupted due to speaker's death" from AIActionDialogObject (FUN_008a15e0); retail writes
 // these nowhere. We copy them into our log (repeats collapsed, at most ENGINELOG_PER_SEC lines a second).
 // Also logged, for a state where Geralt can walk but not act after a conversation (docs/research.md):
-// changes of the dialog bit (8) in the creature state flags (creature+0x350: +0x1E0 flags, +0x1E4 locked;
+// real changes of the dialog bit (8) in the creature state flags (creature+0x350: +0x1E0 flags, +0x1E4 locked;
 // FUN_008b18f0), and the bits FUN_008aaf80 means to clear before a mode switch but cannot: it tests
 // (flags & bit) == 1, which only holds for bit 1, so bits 2, 8, 0x1000 and 0x40000 stay set. Log only.
 
@@ -2504,7 +2504,7 @@ static const char *ApplyDetail(int level, int hotkey)
 #define STATECLEAR_SITE   0x008AAF80 // void __thiscall FUN_008aaf80(creature, DWORD mask)
 #define STATE_RESUME      5          // both start with push ebx; mov ebx,[esp+8]
 #define STATE_UNCLEARED   (2 | 8 | 0x1000 | 0x40000)
-#define ENGINELOG_PER_SEC 30
+#define ENGINELOG_PER_SEC 200 // an area load writes ~60 lines in its busiest second
 
 static const BYTE kEngineLogOrig[]  = { 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF, 0x68, 0xFB, 0x43, 0xAF, 0x00 };
 static const BYTE kStateBitsOrig[]  = { 0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x8B, 0xF1, 0x8B, 0x86, 0x50, 0x03, 0x00, 0x00 };
@@ -2592,7 +2592,8 @@ static void __fastcall StateBitsHook(void *creature, void *edx, DWORD bits, int 
     DWORD before = 0, after = 0, locked = 0, id = 0;
     BOOL dialog = (bits & 8) && StateFlags(creature, &before, &locked, &id);
     g_stateBitsOriginal(creature, edx, bits, set);
-    if (dialog && StateFlags(creature, &after, &locked, &id)) {
+    // NPC AI clears the bit about once a second on everyone; only real changes are worth a line
+    if (dialog && StateFlags(creature, &after, &locked, &id) && (before & 8) != (after & 8)) {
         char text[160];
         sprintf_s(text, sizeof text, "dialog bit %s on object %08X: flags %X -> %X (locked %X)", set == 1 ? "set" : "cleared",
                   id, before, after, locked);
