@@ -19,10 +19,6 @@ Several of these look like one root cause (objects used after deletion). Memory 
 
 Black screen and hang when quitting from the main menu; the process must be killed. No dump yet. Plan: capture a hang dump (ProcDump `-h`), find what the main thread waits on, then either skip that cleanup or add a watchdog that terminates the process N seconds after shutdown starts (settings are saved during shutdown, so skipping blindly is risky).
 
-## Stalls in heavy combat (swamp)
-
-For ~54 s the main thread waited in DXVK (`d3d9.dll+0x11f50f`, `SleepConditionVariableSRW`) and the NVIDIA driver instead of in the frame limiter (`d3d9.dll+0x39d23`); FPS was unstable until the player died and reloaded, after which it was smooth. Game-side callers seen: `IDirect3DDevice9::CreateTexture` (vtable `+0x5c`) at `0x53F02A` and `0x6E7045`, MANAGED pool. Leading hypothesis: DXVK shader/pipeline compilation for first-seen effects. Check with `dxvk.hud = fps,frametimes,memory,gpuload,compiler` in `dxvk.conf`. Note: OBS's implicit Vulkan layer injects `graphics-hook32.dll` into DXVK games even when OBS is not running.
-
 ## Autosave on area transitions
 
 Each autosave spends ~0.3-0.5 s in zlib: byte-at-a-time CRC32 `FUN_00800010` (table at `0xBC6610`), `inflate_fast`-like `FUN_00803860`, deflate window code `FUN_007feaf0`. The CRC part is fixed (fix 5). Deflate is zlib 1.1.4; a lower compression level or a newer deflate could cut the rest, but changes the save bytes, so it needs care (the game must still read them, and saves must stay compatible with the unpatched game).
@@ -50,7 +46,17 @@ The texture wait does sleep on large transitions: the old Vizima profile shows i
 
 ## Lag after alt-tab
 
-2026-10-19: after alt-tabbing back into the game it stayed laggy ("like a low frame rate") until the next alt-tab out and in. Not the main loop's background sleep: the main loop sleeps 1 s per frame when the window is minimized, or when it is fullscreen (`[0x00EE47BC]->vfunc+4`, the same flag that selects `Windowed = 0` at device creation) and `GetWindowInfo` lacks `WS_ACTIVECAPTION` (`0x007532C2`-`0x0075330E`, flag `0x00C2A324`), but `wait_timing` showed no such sleeps during the laggy stretch, only before (while the owner was in another window) and at the second alt-tab. So the frames were slow for another reason (presentation after the focus change, DXVK, the driver). `[debug] frame_log=1` logs every stretch of 3+ s below 30 FPS with how much of it the game was in the foreground, had an active caption and treated itself as inactive; with a log line from the next occurrence, profile it with `sampler.exe` while it is laggy.
+2026-10-19: after alt-tabbing back into the game it stayed laggy ("like a low frame rate") until the next alt-tab out and in. Not the main loop's background sleep: the main loop sleeps 1 s per frame when the window is minimized, or when it is fullscreen (`[0x00EE47BC]->vfunc+4`, the same flag that selects `Windowed = 0` at device creation) and `GetWindowInfo` lacks `WS_ACTIVECAPTION` (`0x007532C2`-`0x0075330E`, flag `0x00C2A324`), but `wait_timing` showed no such sleeps during the laggy stretch, only before (while the owner was in another window) and at the second alt-tab. So the frames were slow for another reason (presentation after the focus change, DXVK, the driver). `[debug] frame_log=1` logs every stretch of 3+ s below 30 FPS with how much of it the game was in the foreground, had an active caption and treated itself as inactive.
+
+What the logs show (`frame_log`, `texture_timing`, `wait_timing`, DXVK's `witcher_d3d9.log`; 23 focus losses on 2026-10-19, 2 of them laggy):
+
+- **Signature:** a steady ~24 FPS (23.9 and 24.3; with `d3d9.maxFrameRate = 72` that is 72/3) with the game in the foreground and active, and every D3D call slow: `CreateTexture` of a 32x32 RGB32 texture with all levels in the file takes 33-36 ms instead of 0.1 ms. So the main thread waits inside DXVK (presentation or DXVK's CS thread), not in game code. The second alt-tab cures it (the next 32x32 textures take 0.1 ms again).
+- **Not the time spent outside:** the laggy ones were 6 s (18:37) and 60 s (21:43) away; 281 s, 336 s and 980 s away were fine.
+- **Not simply "alt-tab during a load":** both laggy ones left the game during or right after a large area transition (900 / 640 textures created just before), but so did three fine ones (18:38, 18:49, 18:54). So far the trigger looks random.
+- **What happens at each alt-tab:** the game is fullscreen (`Windowed = false`, 3840x2160) and DXVK runs it with `VK_PRESENT_MODE_IMMEDIATE_KHR`, 3 images. DXVK does no `ResetSwapChain` on focus changes; it recreates the Vulkan swapchain at 237x39 (the minimized window) when leaving and at 3840x2160 when coming back. The game recreates its ~200 GUI textures on every return (fine and laggy alike).
+- Leading hypothesis: after the swapchain is recreated the presentation sometimes lands in a slower path (composed by DWM instead of independent flip, or G-Sync not re-engaged), and the next recreation (the second alt-tab) puts it right. Not verified. Ways to check: NVIDIA's G-SYNC indicator overlay while it is laggy; PresentMon (shows the present mode per frame); a Present-time hook in the DLL; `sampler.exe` started from the DLL when `frame_log` sees the signature (alt-tabbing to start it cures it).
+
+The "stall in heavy combat in the swamp" (2026-10-18: ~54 s of main-thread waits in DXVK, `d3d9.dll+0x11f50f` `SleepConditionVariableSRW`, slow `CreateTexture` calls at `0x53F02A` and `0x6E7045`, smooth again after a reload) has the same signature, and the owner tied it to an alt-tab once the alt-tab lag was known. It was first taken for DXVK shader compilation in combat; that was never confirmed, so treat it as this issue. Note: OBS's implicit Vulkan layer injects `graphics-hook32.dll` into DXVK games even when OBS is not running.
 
 ## Above 60 FPS
 
