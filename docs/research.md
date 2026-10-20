@@ -77,7 +77,7 @@ Once fix 6 is tested in game, check whether the hair glitch reports are fully ex
 
 ## Draw distances
 
-`[graphics] detail` ([graphics-detail.md](fixes/graphics-detail.md)) multiplies the LOD, grass, shadow and light distances in `g_cAuroraSettings`; the factors are a first guess until measured in game (Ctrl+F12 with `detail_hotkey`, frame rate and main-thread time per level in the log). Not included yet, each needs a look first: `m_nReflectionRTSize` (512, water reflection resolution; no direct reads in the exe, so probably read once when the render target is created), `m_fGrassDensityModifier` (set by the grass slider, 1.0 at most), `m_fCharacterVisibility` (per location from a 2DA, `FUN_0040b420`, on every area load) and `m_fPlaceableVisibility` (120 from `startup.luc`).
+`[graphics] detail` ([graphics-detail.md](fixes/graphics-detail.md)) multiplies the LOD, grass, shadow and light distances in `g_cAuroraSettings`; the factors are a first guess until measured in game (Ctrl+F12 with `detail_hotkey`, frame rate and main-thread time per level in the log). The water reflection texture (`m_nReflectionRTSize`, 512 px) is in it since 2026-10-20 (1024 / 2048), not tested in game yet. Not included yet, each needs a look first: `m_fGrassDensityModifier` (set by the grass slider, 1.0 at most), `m_fCharacterVisibility` (per location from a 2DA, `FUN_0040b420`, on every area load) and `m_fPlaceableVisibility` (120 from `startup.luc`).
 
 ## Quest bugs
 

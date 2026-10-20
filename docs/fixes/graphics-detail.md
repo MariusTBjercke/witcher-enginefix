@@ -21,6 +21,7 @@ What sets what (Steam 1.5.0.1304):
 | `m_fLightsFadeDistanceFactor` `0xC505E8` | 7 | never | `FUN_0070ca90`: a light is on within its radius × this |
 | `m_fMaxDecalsDist` `0xC508E8` | 80 | `startup.luc` 80 | decals (blood etc.) |
 | `m_fMaxWeaponVisualsDist` `0xC508E4` | 40 | `startup.luc` 40 | weapon effects |
+| `m_nReflectionRTSize` `0xC5051C` | 512 | never | no direct reads (read through a pointer); `CAurScene:RecreateReflectionRTs` (Lua binding `FUN_005d2bb0`, vtable +0x18C) rebuilds the reflection targets, so the size is meant to change. Added 2026-10-20, not tested in game yet |
 
 The registry (`HKCU\Software\CD Projekt RED\Witcher\Settings`) stores only the menu's slider positions (`GrassQuality`, `ShadowsQuality` ...), never these values.
 
@@ -28,7 +29,7 @@ Left out on purpose:
 
 - `m_nMaxSceneLOD` / `m_nMaxCharacterLOD` (5): an upper bound on a model's LOD index when its LoD dummies are set up (`FUN_0059e6f0`), with `m_bCreateMissingLODs` = 1. Higher LOD's 150 most likely does nothing; it is not a distance.
 - `m_fCharacterVisibility`: set per location from a 2DA and the "character visibility" slider (`AutoSetCharacterVisibility`, `FUN_0040b420`) on every area load. Characters are the most expensive objects on the single-threaded main loop.
-- `m_fGrassDensityModifier` (more grass per square metre) and `m_nReflectionRTSize` (512): no direct reads in the exe; not checked yet.
+- `m_fGrassDensityModifier` (more grass per square metre): set by the grass slider (1.0 at most); not checked yet.
 - `m_fMapRevealRange`, `m_nDebugMode`: not graphics.
 
 ## Change
@@ -42,6 +43,7 @@ Left out on purpose:
 | grass range and fade (of the slider's value) | × 1.5 (90 m) | × 2 (120 m) |
 | shadow-casting lights | 6 | 8 |
 | light fade distance, decals, weapon effects | × 1.5 | × 2 |
+| water reflection texture (`m_nReflectionRTSize` `0xC5051C`, 512 px) | 1024 | 2048 |
 
 The log has one line each time the game sets some of the values, e.g. `graphics detail 2: the game set fGrassVisibilityRange 60 -> 120, fGrassFadeRange 48 -> 96`.
 

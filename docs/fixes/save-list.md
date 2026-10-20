@@ -2,6 +2,8 @@
 
 Opening the load (or save) menu got slower the more saves there were: 51 saves took 0.26 s, 531 saves took 14.1 s.
 
+The journal fills its tabs (quests, characters, bestiary, ...) the same way (`gui_new_diarypanel.luc` `CGuiNewDiaryPanel:OnTabSelect` calls `AddListItem` per entry), so since 2026-10-20 the batching covers it too. It is now generic: while `SetType` or `OnTabSelect` runs, `AddListItem` adds without the per-item `Refresh`, a list is refreshed as soon as any other `CListControl` method is called on it (the journal calls `ClickItem` on the last selected entry right after filling), and every list left dirty is refreshed once at the end. Not measured in game yet.
+
 ## How the list is built
 
 - `gui_new_system_loadpanel.luc` (`CGuiNewSystemLoadPanel:SetType`) calls `GetLoadSaveSystem():Lua_GetSavedGameList(...)`.

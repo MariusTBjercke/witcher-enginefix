@@ -1865,7 +1865,8 @@ static const char *ApplyOtsMmb(void)
 // detail=1 (high) or 2 (ultra) multiplies a fixed set by a factor per level: LOD distances (5-45 m by
 // default) for scenery, creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
 // shadow distance (30 m) and shadow-casting lights (4), how far lights stay on (7 x their radius), and the
-// decal and weapon effect distances. The factor applies to whatever the game set: a thread checks the
+// decal and weapon effect distances, and the water reflection texture (512 px; scenes create it when they
+// load, CAurScene has RecreateReflectionRTs for later changes). The factor applies to whatever the game set: a thread checks the
 // values every 50 ms, and a value that differs from what we wrote was set by the game (constructor,
 // startup.luc, the grass slider), so it becomes the new base. Level 0 writes nothing. The game stores only
 // the menu's slider positions in the registry, never these values, so nothing accumulates across runs.
@@ -1892,6 +1893,7 @@ static DetailVar g_detailVars[] = {
     { "m_fLightsFadeDistanceFactor",       0x00C505E8, 0x00B5FCE4, 0x00B22C72, 0, { 1, 1.5f, 2 } },
     { "m_fMaxDecalsDist",                  0x00C508E8, 0x00B5EB6C, 0x00B219E2, 0, { 1, 1.5f, 2 } },
     { "m_fMaxWeaponVisualsDist",           0x00C508E4, 0x00B5EB40, 0x00B219B2, 0, { 1, 1.5f, 2 } },
+    { "m_nReflectionRTSize",               0x00C5051C, 0x00B5BE68, 0x00B1E952, 1, { 1, 2, 4 } }, // water reflections, 512 px
 };
 #define DETAIL_COUNT (sizeof g_detailVars / sizeof g_detailVars[0])
 
