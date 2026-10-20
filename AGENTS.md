@@ -54,6 +54,7 @@ An in-memory engine fix for The Witcher: Enhanced Edition 1.5 (Aurora/Odyssey-de
 - Quest scripting: CDPR scripts compare `GetQuestCurrentPhaseIndex("<quest file>")` with `GetQuestPhaseIndex("<quest file>", "", "<phase Name>")`; phase names are the `Name` fields in the `.qst` (`witcherres.py gff`). `GetObjectByTag` only sees loaded areas, which is how `q3043_unlock` misses its doors.
 - `makeClass` (in `global.luc`) uses an `__index` function that looks methods up in the class table at call time, so replacing class methods affects existing instances.
 - Lua 5.0: varargs via `arg`, `pcall` returns status plus results, `os.clock`/`os.date` exist, the working directory is `System\`.
+- Lua 5.0: closures created in a `for` loop share the loop variables (5.1+ gives each iteration its own), so make them in a helper function. Getting this wrong in the `CListControl` wrappers broke the main menu (it opened on the adventure panel with dead clicks).
 
 ## Profiling and analysis
 

@@ -54,16 +54,24 @@ if ENABLED and CListControl and CListControl.Refresh then
     -- Any other list method sees the list as the original would have left it: a pending refresh runs first.
     -- So only runs of consecutive AddListItem calls are merged into one Refresh.
     local NO_FLUSH = { AddListItem = true, _AddListItem = true, Refresh = true, SetIconState = true, GetIconState = true }
-    local methods = {}
-    for k, v in pairs(CListControl) do
-        if type(v) == "function" and not NO_FLUSH[k] then methods[k] = v end
-    end
-    for k, orig in pairs(methods) do
-        CListControl[k] = function(self, ...)
+    -- The wrapper is made in a function of its own: in Lua 5.0 closures created in a for loop share the loop's
+    -- variables, so every wrapper would call the last method.
+    local function Flushing(orig)
+        return function(self, ...)
             if dirtyLists[self] then self:Refresh() end
             return orig(self, unpack(arg))
         end
     end
+    local methods = {}
+    for k, v in pairs(CListControl) do
+        if type(v) == "function" and not NO_FLUSH[k] then methods[k] = v end
+    end
+    local nWrapped = 0
+    for k, orig in pairs(methods) do
+        CListControl[k] = Flushing(orig)
+        nWrapped = nWrapped + 1
+    end
+    if LOG_TIMING then Log("lists: " .. nWrapped .. " CListControl methods flush a pending refresh first") end
     CListControl.Refresh = function(self)
         dirtyLists[self] = nil
         return origRefresh(self)
