@@ -1393,6 +1393,7 @@ static const char *ApplyTexWaitFix(void)
 //  - a "focus back" line 10 s after each return to the game (time away, frames, Present, Sleep(1), window,
 //    display and timer state, visible windows above the game), so fine and laggy returns can be compared;
 //  - Reset calls with their parameters;
+//  - after the game window gets the focus (EVENT_SYSTEM_FOREGROUND), the time to the next frame and Present;
 //  - on the lag signature (4 s in a row at 10-30 FPS, in the foreground, no frame over 250 ms) the same
 //    state, and if [debug] frame_sampler names sampler.exe, a 15 s profile next to the log.
 
@@ -1427,6 +1428,16 @@ static Present_t g_realPresent;
 static Reset_t g_realReset;
 static volatile LONG g_probeN, g_probeUs, g_probeMaxUs; // Sleep(1) probe: count, total and max in µs
 static LONG g_probeNPrev, g_probeUsPrev;
+// Return latency: when the game window gets the focus (WinEvent), the time to the next frame and the next Present.
+static volatile LONG g_fgState;            // 0 idle, 1 got the focus, 2 frame seen, waiting for Present
+static volatile LONG g_fgAtUs, g_fgFrameUs; // QPC in microseconds (32-bit, only differences are used)
+
+static LONG NowUs(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (LONG)(t.QuadPart * 1000000 / g_qpf.QuadPart);
+}
 
 static HRESULT WINAPI PresentHook(void *dev, const RECT *src, const RECT *dst, HWND wnd, const void *dirty)
 {
@@ -1435,6 +1446,12 @@ static HRESULT WINAPI PresentHook(void *dev, const RECT *src, const RECT *dst, H
     QueryPerformanceCounter(&a);
     hr = g_realPresent(dev, src, dst, wnd, dirty);
     QueryPerformanceCounter(&b);
+    if (g_fgState == 2 && GetCurrentThreadId() == g_frameTid) {
+        LONG pres = (LONG)(b.QuadPart * 1000000 / g_qpf.QuadPart) - g_fgAtUs;
+        g_fgState = 0;
+        Log("frame log: game window in front; next frame after %.1f ms, next Present done after %.1f ms (%s)",
+            g_fgFrameUs / 1000.0, pres / 1000.0, *(DWORD *)GAME_ACTIVE ? "active" : "still treated as inactive");
+    }
     if (GetCurrentThreadId() == g_frameTid) { // the statistics belong to the main loop
         LONGLONG t = b.QuadPart - a.QuadPart;
         g_fsSec.presents++;
@@ -1724,6 +1741,10 @@ static void *__cdecl FrameHook(void)
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     if (!g_frameTid) g_frameTid = GetCurrentThreadId();
+    if (g_fgState == 1) {
+        g_fgFrameUs = (LONG)(now.QuadPart * 1000000 / g_qpf.QuadPart) - g_fgAtUs;
+        g_fgState = 2;
+    }
     if (*(DWORD *)GAME_ACTIVE == 0) {
         if (!g_away) {
             g_away = 1;
@@ -1750,6 +1771,25 @@ static void *__cdecl FrameHook(void)
     return ((FrameTarget_t)FRAME_TARGET)();
 }
 
+static void CALLBACK ForegroundEvent(HWINEVENTHOOK h, DWORD ev, HWND w, LONG obj, LONG child, DWORD tid, DWORD ms)
+{
+    (void)h; (void)ev; (void)obj; (void)child; (void)tid; (void)ms;
+    if (w && w == *(HWND *)0x00EE4794 && g_fgState == 0) { // the game's window (FUN_00750150)
+        g_fgAtUs = NowUs();
+        g_fgState = 1;
+    }
+}
+
+static DWORD WINAPI ForegroundThread(LPVOID unused)
+{
+    MSG m;
+    (void)unused;
+    if (!SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, ForegroundEvent, 0, 0,
+                         WINEVENT_OUTOFCONTEXT)) return 0;
+    while (GetMessageA(&m, NULL, 0, 0) > 0) DispatchMessageA(&m);
+    return 0;
+}
+
 static const char *ApplyFrameLog(void)
 {
     BYTE call[5] = { 0xE8 };
@@ -1762,6 +1802,8 @@ static const char *ApplyFrameLog(void)
         SetThreadPriority(t, THREAD_PRIORITY_ABOVE_NORMAL); // measure the timer, not CPU contention
         CloseHandle(t);
     }
+    t = CreateThread(NULL, 0, ForegroundThread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
     *(DWORD *)(call + 1) = (DWORD)FrameHook - (FRAME_SITE + 5);
     return WriteCode(FRAME_SITE, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
