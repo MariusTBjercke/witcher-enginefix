@@ -1,11 +1,12 @@
-"""Builds mod\\Data\\Override\\EngineFix\\ef_q3043_door.ncs without the game's compiler.
+"""Builds the .ncs files in mod\\Data\\Override\\EngineFix without the game's compiler.
 
 Usage: python -I tools\\build_ef_ncs.py [--check]
 
 A tiny NCS V1.0 assembler: big-endian operands, jumps relative to the jumping instruction, engine
 routines numbered by their position in System\\Scripts\\nwscriptdefn.nss (see tools\\ncsdis.py).
-The program below is ef_q3043_door.nss written out by hand; tools\\ncsdis.py disassembles the result.
---check only verifies that the committed .ncs matches what this script would write.
+The programs below are ef_q3043_door.nss and ef_lootall.nss written out by hand; tools\\ncsdis.py
+disassembles the result. --check only verifies that the committed .ncs files match what this script
+would write.
 """
 import os
 import struct
@@ -15,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ncsdis  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "mod", "Data", "Override", "EngineFix", "ef_q3043_door.ncs")
+OUT_DIR = os.path.join(ROOT, "mod", "Data", "Override", "EngineFix")
 
 # Routine numbers in nwscriptdefn.nss (1.5). Checked against the file when it is available.
 ROUTINES = {
@@ -79,7 +80,7 @@ class Asm:
         return b"NCS V1.0" + b"B" + struct.pack(">I", 13 + len(out)) + bytes(out)
 
 
-def program():
+def door_program():
     q = "q3043_trisshan"
     a = Asm()
     a.jump(0x1E, "main")                       # JSR main
@@ -120,6 +121,21 @@ def program():
     return a.assemble()
 
 
+def lootall_program():
+    # The same layout the game's compiler emits for a one-line RunClientLua script.
+    a = Asm()
+    a.jump(0x1E, "main")                       # JSR main
+    a.retn()
+    a.label("main")
+    a.const_s("EngineFix_QuickLoot()")
+    a.action("RunClientLua", 1)
+    a.retn()
+    return a.assemble()
+
+
+PROGRAMS = {"ef_q3043_door.ncs": door_program, "ef_lootall.ncs": lootall_program}
+
+
 def check_routines():
     names = ncsdis.load_names(ncsdis.DEFAULT_DEFN)
     if not names:
@@ -131,15 +147,19 @@ def check_routines():
 
 def main(argv):
     check_routines()
-    data = program()
-    if "--check" in argv:
-        same = os.path.exists(OUT) and open(OUT, "rb").read() == data
-        print("up to date" if same else "OUT OF DATE")
-        return 0 if same else 1
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    open(OUT, "wb").write(data)
-    print(f"wrote {OUT} ({len(data)} bytes)")
-    return 0
+    failed = 0
+    for name, program in PROGRAMS.items():
+        out = os.path.join(OUT_DIR, name)
+        data = program()
+        if "--check" in argv:
+            same = os.path.exists(out) and open(out, "rb").read() == data
+            print(f"{name}: " + ("up to date" if same else "OUT OF DATE"))
+            failed |= not same
+            continue
+        os.makedirs(OUT_DIR, exist_ok=True)
+        open(out, "wb").write(data)
+        print(f"wrote {out} ({len(data)} bytes)")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

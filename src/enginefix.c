@@ -65,6 +65,10 @@
 // QoL 3 ([qol] borderless, off by default): windowed mode gets a borderless window (instant alt-tab) that otherwise
 //   behaves like fullscreen (cursor clip, edge camera turn, pause while in the background).
 //
+// QoL 4 ([qol] quick_loot, quick_loot_key): a hotkey (Space) presses "Take all" in the loot window and keeps Space's
+//   pause elsewhere. All in Scripts\enginefix_hook.lua (bindkey + Data\Override\EngineFix\ef_lootall.ncs); the DLL only
+//   logs its state. Steps aside when the Witcher Quick Loot mod is installed.
+//
 // QoL changes ([qol]) can be turned off the same way. Diagnostics ([debug]) are off unless the ini turns them on.
 
 #include <windows.h>
@@ -78,7 +82,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.5.1"
+#define ENGINEFIX_VERSION "0.6.0"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -2530,6 +2534,23 @@ static void CheckLuaLoader(void)
     Log(listed ? "Lua save-list fix: loaded by Scripts\\testtools.lua"
                : "Lua save-list fix: INACTIVE, Scripts\\testtools.lua does not list enginefix_hook "
                  "(another mod may have replaced it; copy the one from this mod back)");
+
+    // QoL 4 is bound by enginefix_hook.lua; this only says what it will do.
+    sprintf_s(path, MAX_PATH, "%sScripts\\quickloot_hook.lua", dir);
+    if (!listed) {
+        Log("qol 4 (quick loot hotkey): inactive with the Lua part");
+    } else if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+        Log("qol 4 (quick loot hotkey): Witcher Quick Loot is installed (Scripts\\quickloot_hook.lua), its hotkey is used");
+    } else if (!IniFlag("qol", "quick_loot", 1)) {
+        Log("qol 4 (quick loot hotkey): disabled in ini");
+    } else {
+        char ini[MAX_PATH], key[32];
+        IniPath(ini);
+        GetPrivateProfileStringA("qol", "quick_loot_key", "", key, sizeof key, ini);
+        key[strcspn(key, " \t;")] = 0;
+        Log("qol 4 (quick loot hotkey): %s, bound by Scripts\\enginefix_hook.lua (Take all in the loot window%s)",
+            key[0] ? key : "SPACE", !key[0] || _stricmp(key, "SPACE") == 0 ? ", pause elsewhere" : "");
+    }
 }
 
 // ---- dinput8 proxy ----------------------------------------------------------

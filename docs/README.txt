@@ -35,6 +35,9 @@ Quality of life:
   (Space) to turn the camera with the mouse, as in the other cameras.
 - "Exit game" in the pause menu (Esc), under "Exit to main menu", with the same
   "Are you sure?" question.
+- Quick loot: Space in the loot window presses "Take all". In shops and storage
+  it does nothing; everywhere else it still pauses, as before. The same as the
+  Witcher Quick Loot mod; if that one is installed too, it takes over.
 
 Optional, off by default:
 - Borderless window: Options > Graphics > "Borderless window". With full
@@ -59,9 +62,11 @@ game. Each fix should say "applied".
 Files installed:
   System\dinput8.dll                  the engine fix (loaded by the game)
   System\witcher_enginefix.ini        settings
-  System\Scripts\enginefix_hook.lua   load/save menu fix, "The Source" door fix and
-                                      the pause menu's "Exit game" button
-  Data\Override\EngineFix\           the "The Source" door script
+  System\Scripts\enginefix_hook.lua   load/save menu fix, "The Source" door fix,
+                                      "Exit game" in the pause menu, "Borderless
+                                      window" in the options and quick loot
+  Data\Override\EngineFix\            the "The Source" door script and the quick
+                                      loot hotkey script
   System\Scripts\testtools.lua        shared startup loader (see COMPATIBILITY)
 
 
@@ -75,6 +80,14 @@ In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu
 fix's Lua part, "local KIDNAP_DOOR_FIX = false" the "The Source" door fix and
 "local PAUSE_EXIT_BUTTON = false" the pause menu's "Exit game" button.
 
+Quick loot ([qol] quick_loot=1, quick_loot_key=SPACE) binds its key with the
+game's own key macros (saved in System\keybinding.ini). A bound key does nothing
+else, so with SPACE the mod performs the pause itself outside the loot window;
+any other key only takes all. One engine key name, no modifiers: A-Z, 0-9,
+F1-F12, NUMPAD0-NUMPAD9, INSERT, DELETE, HOME, END, PAGEUP, PAGEDOWN, SPACE,
+TAB, BACK, RETURN and a few more (see Witcher Quick Loot's README). A key
+changed there is unbound on the next start.
+
 
 COMPATIBILITY
 -------------
@@ -87,6 +100,10 @@ COMPATIBILITY
   with this mod. This mod ships loader version 2, which runs all three. If
   another mod puts back version 1, the menu fix stops working and the log says
   "Lua save-list fix: INACTIVE". Copy testtools.lua from this mod back.
+- Witcher Quick Loot is no longer needed, but keeping it is fine: while its
+  quickloot_hook.lua is installed, its hotkey and settings are used and this
+  mod's quick loot stays out of the way. The log says which one is active
+  ("qol 4").
 - Tested on Steam 1.5.0.1304 (Windows 11, DXVK). GOG is the same game build but
   untested. On a different build a fix skips itself and logs why.
 - The game is usually capped at 60 FPS. This mod fixes the known hair problem
@@ -98,6 +115,9 @@ UNINSTALL
 Delete Data\Override\EngineFix, System\dinput8.dll, System\witcher_enginefix.ini,
 System\witcher_enginefix*.log and System\Scripts\enginefix_hook.lua. Delete
 System\Scripts\testtools.lua too, unless Speed Toggle or Quick Loot is installed.
+Remove the line "SPACE runscript ef_lootall" from System\keybinding.ini (or the
+whole file, which only holds key macros), otherwise Space stays without its
+pause. Setting quick_loot=0 and starting the game once does the same.
 The caches in %LOCALAPPDATA%\The Witcher\enginefix_thumbs and
 %LOCALAPPDATA%\The Witcher\enginefix_mips are safe to delete at any time.
 

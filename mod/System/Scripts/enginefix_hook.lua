@@ -18,6 +18,11 @@
 --    RegisterLuaSetting), greyed out while "Full screen" is ticked. The game stores it with its other settings
 --    (registry value EngineFixBorderless); dinput8.dll reads it there a few times a second, so it applies at once.
 --
+-- 5. Quick loot (QoL 4, the same as the Witcher Quick Loot mod). A hotkey ([qol] quick_loot_key in
+--    witcher_enginefix.ini, default Space) presses "Take all" in the loot window and does nothing in shops and
+--    storage. A key bound with bindkey never reaches the game, so with Space it also does Space's normal pause
+--    everywhere else. When Witcher Quick Loot is installed as well, it handles the key and this one stays unbound.
+--
 -- Run at startup by the shared loader testtools.lua.
 
 local ENABLED = true           -- false turns the load/save list and journal fix off
@@ -33,6 +38,26 @@ local function Log(sText)
         file:write((os.date and os.date("%H:%M:%S ") or "") .. sText .. "\n")
         file:close()
     end
+end
+
+-- Reads one [section] of System\witcher_enginefix.ini (dinput8.dll's settings) as { key = "value" }, keys in
+-- lower case, values up to the first space or ";".
+local function ReadIniSection(sSection)
+    local tValues = {}
+    local file = io.open("witcher_enginefix.ini", "r")
+    if not file then return tValues end
+    local sCurrent
+    for line in file:lines() do
+        local _, _, sName = string.find(line, "^%s*%[(.-)%]")
+        if sName then
+            sCurrent = string.lower(sName)
+        elseif sCurrent == sSection then
+            local _, _, sKey, sValue = string.find(line, "^%s*([%w_]+)%s*=%s*([^%s;]*)")
+            if sKey and tValues[string.lower(sKey)] == nil then tValues[string.lower(sKey)] = sValue end
+        end
+    end
+    file:close()
+    return tValues
 end
 
 if ENABLED and CListControl and CListControl.Refresh then
@@ -266,4 +291,46 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         end
     end)
     if not ok then Log("options: Borderless window not added: " .. tostring(err)) end
+end
+
+if ModHooks_BindScripts then
+    local tQol = ReadIniSection("qol")
+    local sKey = string.upper(tQol.quick_loot_key or "")
+    if sKey == "" then sKey = "SPACE" end
+    local bPause = sKey == "SPACE" -- any other key does nothing outside the loot window
+
+    -- Called by Data\Override\EngineFix\ef_lootall.ncs whenever the hotkey is pressed.
+    function EngineFix_QuickLoot()
+        local gui = g_GuiInGame
+        if not gui then return end
+
+        -- Inventory open: Take all in loot mode; in shops and storage do nothing.
+        local inventory = gui.lm_pNewInventoryPanel
+        if inventory and inventory.lm_bActive then
+            if inventory:IsLootOpen() and inventory.lm_pTransferPanel then
+                inventory.lm_pTransferPanel:TransferAll()
+            end
+            return
+        end
+
+        -- Otherwise the same pause toggle as the game's own Space key. Unpausing always works; pausing is skipped
+        -- while another panel (map, journal, ...) is open, like the vanilla key.
+        if bPause and g_pClientExoApp and (gui.lm_bUserPause or not gui:IsAnyPanelOpen()) then
+            g_pClientExoApp:TogglePauseRequest()
+        end
+    end
+
+    -- Witcher Quick Loot binds the same thing to its own script (lootall) with its own settings. When it is
+    -- installed, it handles the key, whichever hook runs first. Otherwise a "runscript lootall" line left in
+    -- keybinding.ini by a removed Quick Loot would keep its key without function (no pause), so it is unbound.
+    local file = io.open("Scripts\\quickloot_hook.lua", "r")
+    local bQuickLootMod = file ~= nil or QuickLoot_TakeAllOrPause ~= nil
+    if file then file:close() end
+    if bQuickLootMod then
+        ModHooks_BindScripts({ ef_lootall = false })
+    elseif tQol.quick_loot == nil or (tonumber(tQol.quick_loot) or 0) ~= 0 then -- as dinput8.dll reads it
+        ModHooks_BindScripts({ ef_lootall = sKey, lootall = false })
+    else
+        ModHooks_BindScripts({ ef_lootall = false, lootall = false })
+    end
 end

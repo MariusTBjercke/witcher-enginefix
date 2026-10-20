@@ -18,6 +18,7 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 | **Cursor jumps to the top-left** | After the mouse has turned the camera (active pause or Shift in the over-the-shoulder camera), the cursor came back in the top-left area at resolutions above 1366x768. It now comes back in the middle of the screen. | on |
 | **Slow return after alt-tab** | After alt-tabbing back, the game could take up to a second to react (it finished a one-second background sleep first). It now reacts at once, and still pauses while in the background. | on |
 | **Exit game from the pause menu** | Quality of life: the pause menu (Esc) gets an "Exit game" button under "Exit to main menu", with the same "Are you sure?" question, so you no longer have to go through the main menu to quit. | on |
+| **Quick loot** | Quality of life: Space in the loot window presses "Take all". In shops and storage it does nothing; everywhere else it still pauses, as before. The same as the [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot) mod, which can stay installed alongside (it then takes over). | on |
 | **Camera in active pause (over-the-shoulder)** | Quality of life: in the over-the-shoulder camera, active pause (Space) shows the cursor and only edge scrolling moved the camera. Hold the middle mouse button to turn it with the mouse, as in the other cameras. | on |
 | **Borderless window** | Quality of life, off by default: Options > Graphics > "Borderless window". With full screen off and the desktop resolution, the game fills the screen without a border and alt-tab is instant, while the cursor, edge camera turn and pause-in-the-background behave as in full screen. | off |
 | **Longer draw distances** | Optional, off by default: `[graphics] detail=1` (high) or `2` (ultra) keeps full-detail models, trees, grass, shadows and lights out to 1.5-3× the game's distances, on top of your options menu. No debug mode or console commands needed. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen, so you can compare. On a modern PC it cost under 0.5 ms per frame (72 FPS held at 4K). | off |
@@ -42,8 +43,8 @@ To check that it works, open `System\witcher_enginefix.log` after starting the g
 |---|---|
 | `System\dinput8.dll` | The engine fix. The game loads it automatically |
 | `System\witcher_enginefix.ini` | Settings |
-| `System\Scripts\enginefix_hook.lua` | The load/save menu fix and the "The Source" door fix |
-| `Data\Override\EngineFix\` | The "The Source" door script (`.ncs`) and its source (`.nss`) |
+| `System\Scripts\enginefix_hook.lua` | The load/save menu fix, the "The Source" door fix, the pause menu's "Exit game", "Borderless window" in the options and quick loot |
+| `Data\Override\EngineFix\` | The "The Source" door script and the quick loot hotkey script (`.ncs`), with their sources (`.nss`) |
 | `System\Scripts\testtools.lua` | Shared startup loader (see [Compatibility](#compatibility)) |
 
 ## Configuration
@@ -67,6 +68,8 @@ fix11=1  ; react at once when coming back to the game after an alt-tab
 [qol]
 ots_pause_mmb_camera=1   ; over-the-shoulder camera: hold the middle mouse button to turn it in active pause
 borderless=0             ; borderless window; normally set in Options > Graphics, this line counts until the menu has saved it
+quick_loot=1             ; quick loot: the key below presses "Take all" in the loot window
+quick_loot_key=SPACE     ; one engine key name; with SPACE it still pauses outside the loot window
 
 [graphics]
 detail=0   ; longer LOD, grass, shadow and light distances: 0 = the game's own, 1 = high, 2 = ultra
@@ -74,6 +77,8 @@ hotkey=1   ; Ctrl+F12 in game cycles off/high/ultra and shows the level on scree
 ```
 
 The `[debug]` section holds diagnostics for development (logging only); leave them off.
+
+Quick loot binds its key with the game's own key macros (saved in `System\keybinding.ini`). A bound key does nothing else, so with `SPACE` the mod performs the pause itself outside the loot window; any other key only takes all. Key names: `A`-`Z`, `0`-`9`, `F1`-`F12`, `NUMPAD0`-`NUMPAD9`, `INSERT`, `DELETE`, `HOME`, `END`, `PAGEUP`, `PAGEDOWN`, `SPACE`, `TAB`, `BACK`, `RETURN` and a few more ([full list](https://github.com/MariusTBjercke/witcher-quick-loot#what-the-hotkey-can-be)); no modifiers. A key changed here is unbound on the next start.
 
 Three are switched in `System\Scripts\enginefix_hook.lua` instead: `local ENABLED = false` turns off the menu's Lua part, `local KIDNAP_DOOR_FIX = false` the "The Source" door fix, `local PAUSE_EXIT_BUTTON = false` the pause menu's "Exit game" button.
 
@@ -83,11 +88,12 @@ Three are switched in `System\Scripts\enginefix_hook.lua` instead: `local ENABLE
 - **DXVK** and texture packs (tested with the AiO texture pack) work alongside it. The area loading cache is keyed on the texture data itself, so changing or removing a texture pack is fine.
 - **Area loading cache:** needs a CPU with SSE4.2 (any CPU since about 2008); without it that fix skips itself and says so in the log. ReShade uses `d3d9.dll`, not `dinput8.dll`, so it should too (untested).
 - **[Witcher Speed Toggle](https://github.com/MariusTBjercke/witcher-speed-toggle) and [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot)** share `System\Scripts\testtools.lua` with this mod. All three ship the same loader (version 2) since Speed Toggle 1.2.1 and Quick Loot 1.0.2, so they can be installed in any order. Older versions of those two put back version 1, which turns this mod's menu and door fixes off, and the log says so (`Lua save-list fix: INACTIVE`): update them, or copy `testtools.lua` from this mod back.
+- **Witcher Quick Loot** is no longer needed (this mod does the same), but keeping it is fine: while its `quickloot_hook.lua` is installed, its hotkey and settings are used and this mod's quick loot stays out of the way. The log says which one is active (`qol 4`).
 - **Above 60 FPS:** the game is usually capped at 60 FPS because of glitches above it. This mod fixes the known hair cause, but other high-frame-rate problems have not been ruled out yet. If you play above 60 and notice something, please report it.
 
 ## Uninstall
 
-Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log`, `System\Scripts\enginefix_hook.lua` and `Data\Override\EngineFix`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs` and the area loading fix a texture cache in `%LOCALAPPDATA%\The Witcher\enginefix_mips` (small: about 10 MB after a handful of areas); both are safe to delete at any time.
+Delete `System\dinput8.dll`, `System\witcher_enginefix.ini`, `System\witcher_enginefix*.log`, `System\Scripts\enginefix_hook.lua` and `Data\Override\EngineFix`. Delete `System\Scripts\testtools.lua` too, unless Speed Toggle or Quick Loot is installed. Remove the line `SPACE runscript ef_lootall` from `System\keybinding.ini` (or the whole file, which only holds key macros), otherwise Space stays without its pause; setting `quick_loot=0` and starting the game once does the same. The menu fix keeps a thumbnail cache in `%LOCALAPPDATA%\The Witcher\enginefix_thumbs` and the area loading fix a texture cache in `%LOCALAPPDATA%\The Witcher\enginefix_mips` (small: about 10 MB after a handful of areas); both are safe to delete at any time.
 
 ## Reporting a problem
 
