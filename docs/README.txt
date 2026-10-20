@@ -43,7 +43,7 @@ Optional, off by default:
 - Longer draw distances: [graphics] detail=1 (high) or 2 (ultra) in the ini
   keeps full-detail models, trees, grass, shadows and lights out to 1.5-3x the
   game's distances, on top of the options menu. Costs some frame rate on older
-  PCs.
+  PCs. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen.
 
 
 INSTALLATION

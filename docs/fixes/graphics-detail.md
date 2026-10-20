@@ -47,7 +47,7 @@ Left out on purpose:
 
 The log has one line each time the game sets some of the values, e.g. `graphics detail 2: the game set fGrassVisibilityRange 60 -> 120, fGrassFadeRange 48 -> 96`.
 
-For measuring, `[debug] detail_hotkey=1` makes Ctrl+F12 cycle the level in game (logged), and with `frame_log=1` a line every 10 s gives the frame rate and the main thread's time per frame outside `Present`, which is the game's own work (the DXVK frame limiter waits inside `Present`).
+`[graphics] hotkey=1` (default) makes Ctrl+F12 cycle the level in game until it exits (`detail=` is the level at startup). Each press shows "Graphics detail: High (Ctrl+F12)" at the top of the screen for 2.5 s: on the first press the device's `Present` is hooked (vtable slots 16/17, shared with the frame log), and right before each `Present` the text is drawn on the back buffer with D3DX's font from `d3dx9_35.dll`, which the game loads (raw vtable calls; the font's sprite saves and restores the render states; `OnLostDevice`/`OnResetDevice` around `Reset`). With `[debug] frame_log=1` a line every 10 s gives the frame rate and the main thread's time per frame outside `Present`, which is the game's own work (the DXVK frame limiter waits inside `Present`). The old `[debug] detail_hotkey` still turns the hotkey on.
 
 ## Verification
 

@@ -1439,10 +1439,90 @@ static LONG NowUs(void)
     return (LONG)(t.QuadPart * 1000000 / g_qpf.QuadPart);
 }
 
+// On-screen message (the graphics detail hotkey): drawn on the back buffer right before Present with D3DX's font
+// (d3dx9_35.dll, which the game loads), through raw vtables: IDirect3DDevice9 GetBackBuffer 18, SetRenderTarget 37,
+// GetRenderTarget 38, BeginScene 41, EndScene 42; IDirect3DSurface9 GetDesc 12; ID3DXFont DrawTextA 14,
+// OnLostDevice 16, OnResetDevice 17. The font's own sprite saves and restores the render states.
+typedef HRESULT (WINAPI *D3DXCreateFontA_t)(void *, INT, UINT, UINT, UINT, BOOL, DWORD, DWORD, DWORD, DWORD, LPCSTR, void **);
+typedef HRESULT (WINAPI *ComCall_t)(void *);
+typedef INT (WINAPI *FontDrawTextA_t)(void *, void *, LPCSTR, INT, RECT *, DWORD, DWORD);
+
+static char g_osdText[96];
+static volatile DWORD g_osdUntil; // GetTickCount when the message is gone; 0 = none
+static void *g_osdFont, *g_osdFontDev;
+static int g_osdFontH, g_osdFailed;
+
+#define VT(obj, i) ((*(void ***)(obj))[i])
+
+static void OsdShow(const char *text, DWORD ms)
+{
+    strcpy_s(g_osdText, sizeof g_osdText, text);
+    g_osdUntil = (GetTickCount() + ms) | 1;
+}
+
+static void OsdDraw(void *dev)
+{
+    void *bb = NULL, *oldRt = NULL;
+    DWORD desc[8], left = g_osdUntil - GetTickCount(), alpha;
+    RECT r;
+    int h;
+    if ((LONG)left <= 0) { g_osdUntil = 0; return; }
+    if (((HRESULT (WINAPI *)(void *, UINT, UINT, DWORD, void **))VT(dev, 18))(dev, 0, 0, 0, &bb) != 0 || !bb) return;
+    if (((HRESULT (WINAPI *)(void *, DWORD *))VT(bb, 12))(bb, desc) != 0) goto done;
+    h = (int)desc[7] / 30; // ~72 px at 2160
+    if (h < 16) h = 16;
+    if (g_osdFont && (g_osdFontDev != dev || g_osdFontH != h)) {
+        if (g_osdFontDev == dev) ((ComCall_t)VT(g_osdFont, 2))(g_osdFont); // Release; a font of an older device is left alone
+        g_osdFont = NULL;
+    }
+    if (!g_osdFont && !g_osdFailed) {
+        D3DXCreateFontA_t create = NULL;
+        HMODULE d3dx = GetModuleHandleA("d3dx9_35.dll");
+        if (d3dx) create = (D3DXCreateFontA_t)GetProcAddress(d3dx, "D3DXCreateFontA");
+        if (!create || create(dev, h, 0, FW_BOLD, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                              DEFAULT_PITCH | FF_ROMAN, "Georgia", &g_osdFont) != 0 || !g_osdFont) {
+            g_osdFont = NULL;
+            g_osdFailed = 1;
+            Log("on-screen message: no D3DX font (%s); the message is in the log only", d3dx ? "D3DXCreateFontA failed" : "d3dx9_35.dll not loaded");
+            goto done;
+        }
+        g_osdFontDev = dev;
+        g_osdFontH = h;
+        Log("on-screen message: D3DX font %d px", h);
+    }
+    if (!g_osdFont) goto done;
+    alpha = left >= 500 ? 255 : left * 255 / 500; // fade out over the last 0.5 s
+    ((HRESULT (WINAPI *)(void *, DWORD, void **))VT(dev, 38))(dev, 0, &oldRt); // draw on the back buffer, whatever is bound
+    ((HRESULT (WINAPI *)(void *, DWORD, void *))VT(dev, 37))(dev, 0, bb);
+    if (((ComCall_t)VT(dev, 41))(dev) == 0) { // BeginScene
+        r.left = 0; r.right = (LONG)desc[6];
+        r.top = (LONG)desc[7] / 12 + h / 15; r.bottom = r.top + h * 2;
+        OffsetRect(&r, h / 15, 0);
+        ((FontDrawTextA_t)VT(g_osdFont, 14))(g_osdFont, NULL, g_osdText, -1, &r, DT_CENTER | DT_TOP | DT_NOCLIP, alpha << 24);
+        OffsetRect(&r, -h / 15, -h / 15);
+        ((FontDrawTextA_t)VT(g_osdFont, 14))(g_osdFont, NULL, g_osdText, -1, &r, DT_CENTER | DT_TOP | DT_NOCLIP,
+                                             (alpha << 24) | 0x00F0E6D2);
+        ((ComCall_t)VT(dev, 42))(dev); // EndScene
+    }
+    if (oldRt) {
+        ((HRESULT (WINAPI *)(void *, DWORD, void *))VT(dev, 37))(dev, 0, oldRt);
+        ((ComCall_t)VT(oldRt, 2))(oldRt);
+    }
+done:
+    ((ComCall_t)VT(bb, 2))(bb);
+}
+
 static HRESULT WINAPI PresentHook(void *dev, const RECT *src, const RECT *dst, HWND wnd, const void *dirty)
 {
     LARGE_INTEGER a, b;
     HRESULT hr;
+    if (g_osdUntil) {
+        __try { OsdDraw(dev); } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_osdUntil = 0;
+            g_osdFailed = 1;
+            Log("on-screen message: exception %08lx while drawing; turned off", GetExceptionCode());
+        }
+    }
     QueryPerformanceCounter(&a);
     hr = g_realPresent(dev, src, dst, wnd, dirty);
     QueryPerformanceCounter(&b);
@@ -1466,9 +1546,11 @@ static HRESULT WINAPI ResetHook(void *dev, DWORD *pp)
 {
     LARGE_INTEGER a, b;
     HRESULT hr;
+    if (g_osdFont && g_osdFontDev == dev) ((ComCall_t)VT(g_osdFont, 16))(g_osdFont); // OnLostDevice
     QueryPerformanceCounter(&a);
     hr = g_realReset(dev, pp);
     QueryPerformanceCounter(&b);
+    if (g_osdFont && g_osdFontDev == dev && hr == 0) ((ComCall_t)VT(g_osdFont, 17))(g_osdFont); // OnResetDevice
     __try { // D3DPRESENT_PARAMETERS
         Log("frame log: Reset %.1f ms, hr %08lx: %lux%lu, %lu back buffers, swap effect %lu, windowed %lu, %lu Hz, interval %08lx",
             (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart, (DWORD)hr, pp[0], pp[1], pp[3], pp[6], pp[8], pp[12], pp[13]);
@@ -1489,8 +1571,10 @@ static void ModuleOf(const void *addr, char *name, size_t n)
 
 // Hooks Present and Reset in the device's vtable once. A later device with another vtable is not hooked
 // again: re-hooking a slot that an overlay has meanwhile wrapped around ours would make us call ourselves.
+// Called from the main loop (frame log) and from the detail hotkey's thread; only one of them hooks.
 static void HookDevice(void)
 {
+    static volatile LONG claim;
     void *dev = NULL, **vt;
     DWORD old, cp[4] = { 0 }; // D3DDEVICE_CREATION_PARAMETERS: adapter, device type, focus window, flags
     char vtMod[64], presMod[64];
@@ -1504,6 +1588,7 @@ static void HookDevice(void)
         }
         return;
     }
+    if (InterlockedCompareExchange(&claim, 1, 0) != 0) return;
     g_devHooked = 1;
     if (!VirtualProtect(&vt[16], 2 * sizeof(void *), PAGE_READWRITE, &old)) {
         Log("frame log: Present hook FAILED (VirtualProtect)");
@@ -2133,8 +2218,9 @@ static const char *ApplyBorderless(int on)
 // values every 50 ms, and a value that differs from what we wrote was set by the game (constructor,
 // startup.luc, the grass slider), so it becomes the new base. Level 0 writes nothing. The game stores only
 // the menu's slider positions in the registry, never these values, so nothing accumulates across runs.
-// [debug] detail_hotkey=1: Ctrl+F12 cycles the level in game; with frame_log=1 a line every 10 s gives the
-// frame rate and the main thread's time per frame outside Present (the game's own work) for the level.
+// [graphics] hotkey=1 (default): Ctrl+F12 cycles the level in game (until the game exits) and shows it on screen
+// for 2.5 s (OsdDraw; the device's Present is hooked on the first press). With [debug] frame_log=1 a line every
+// 10 s gives the frame rate and the main thread's time per frame outside Present (the game's own work).
 
 typedef struct {
     const char *name; // g_cAuroraSettings member
@@ -2161,6 +2247,7 @@ static DetailVar g_detailVars[] = {
 #define DETAIL_COUNT (sizeof g_detailVars / sizeof g_detailVars[0])
 
 static const char *const kDetailNames[3] = { "off", "high", "ultra" };
+static const char *const kDetailTitles[3] = { "Off", "High", "Ultra" };
 static volatile LONG g_detailLevel;
 static int g_detailHotkey, g_detailBaseLogs;
 static FrameStats g_fsDetail;
@@ -2245,10 +2332,14 @@ static DWORD WINAPI DetailThread(LPVOID unused)
             int now = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F12) & 0x8000);
             if (fg) GetWindowThreadProcessId(fg, &pid);
             if (now && !down && pid == GetCurrentProcessId()) {
+                char msg[64];
                 level = (level + 1) % 3;
                 InterlockedExchange(&g_detailLevel, level);
                 DetailApply(level);
                 DetailLogLevel(level, " (Ctrl+F12)");
+                sprintf_s(msg, sizeof msg, "Graphics detail: %s   (Ctrl+F12)", kDetailTitles[level]);
+                OsdShow(msg, 2500);
+                if (!g_devHooked) HookDevice(); // draws the message
                 down = now;
                 continue;
             }
@@ -2296,6 +2387,7 @@ static const char *ApplyDetail(int level, int hotkey)
     if (!ok) return "skipped (bytes differ)";
     g_detailLevel = level;
     g_detailHotkey = hotkey;
+    if (!g_qpf.QuadPart) QueryPerformanceFrequency(&g_qpf); // Present hook statistics
     t = CreateThread(NULL, 0, DetailThread, NULL, 0, NULL);
     if (!t) return "FAILED (no thread)";
     CloseHandle(t);
@@ -2340,7 +2432,8 @@ static void TryPatch(void)
             ApplyBorderless(on), from);
     }
     {
-        int level = IniInt("graphics", "detail", 0), hotkey = IniFlag("debug", "detail_hotkey", 0);
+        int level = IniInt("graphics", "detail", 0);
+        int hotkey = IniFlag("graphics", "hotkey", 1) || IniFlag("debug", "detail_hotkey", 0); // the old [debug] name still counts
         if (level < 0 || level > 2) level = 0;
         Log("graphics detail (LOD, grass, shadow and light distances): %s",
             level || hotkey ? ApplyDetail(level, hotkey) : "off (detail=0)");
