@@ -59,6 +59,9 @@
 //   distances (g_cAuroraSettings) on top of what the game and its options menu set.
 //
 // Each fix can be disabled in witcher_enginefix.ini next to the DLL ([fixes] fix2=0 etc.).
+// QoL 3 ([qol] borderless, off by default): windowed mode gets a borderless window (instant alt-tab) that otherwise
+//   behaves like fullscreen (cursor clip, edge camera turn, pause while in the background).
+//
 // QoL changes ([qol]) can be turned off the same way. Diagnostics ([debug]) are off unless the ini turns them on.
 
 #include <windows.h>
@@ -70,6 +73,7 @@
 #pragma intrinsic(_ReturnAddress, _AddressOfReturnAddress)
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 #define ENGINEFIX_VERSION "0.4.0"
 
@@ -1858,6 +1862,98 @@ static const char *ApplyOtsMmb(void)
     return WriteCode(OTSMMB_JZ, jz, sizeof jz) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- QoL 3: borderless window ------------------------------------------------------------------
+// In windowed mode (options menu, FullScreen off) FUN_005932f0 gives the window a caption and border (style
+// 0x02CA0000, at 0x0059334D) and sizes it so the client area is the game's resolution, at (0, 0). Fullscreen
+// uses a popup (0x82000000), which we take for windowed too: at the desktop resolution that is a borderless
+// window over the primary monitor, and Direct3D stays windowed (no exclusive mode, instant alt-tab).
+// Some behaviour is tied to fullscreen through [0x00EE47BC]->vfunc+4; these sites treat borderless as
+// fullscreen, so the game feels the same: the cursor is clipped to the screen (FUN_004e2100) and released
+// (FUN_0043f6c0), the camera turns at the screen edge (FUN_004262f0), and the main loop sleeps while the
+// window is inactive (0x007532E7), which is what pauses the game after an alt-tab. Device creation and the
+// device-lost path keep asking the real question. A thread releases the cursor clip when another window
+// gets the focus.
+
+#define BL_STYLE      0x0059334D // mov esi,0x02CA0000 (windowed style)
+#define GAME_SETTINGS 0x00EE47BC // object whose vfunc+4 says "fullscreen"
+
+typedef struct { DWORD at; BYTE orig[16]; int len; } BlSite; // at: the vfunc load + call to replace
+
+static const BlSite kBlSites[] = {
+    { 0x004266B5, { 0x8B, 0x50, 0x04, 0xFF, 0xD2 }, 5 },                   // edge camera turn
+    { 0x0043F7CF, { 0x8B, 0x42, 0x04, 0xFF, 0xD0 }, 5 },                   // release cursor clip
+    { 0x004E2108, { 0x8B, 0x50, 0x04, 0x83, 0xEC, 0x10, 0xFF, 0xD2 }, 8 }, // clip cursor (sub esp,0x10 in between)
+    { 0x007532EF, { 0x8B, 0x42, 0x04, 0xFF, 0xD0 }, 5 },                   // sleep while inactive
+};
+
+// Called instead of the vfunc with ECX = the settings object (thiscall, no stack arguments, so __fastcall
+// fits): fullscreen, or windowed, which is borderless now.
+static int __fastcall BorderlessFullscreen(void *obj)
+{
+    (void)obj;
+    return 1;
+}
+
+static DWORD WINAPI BorderlessThread(LPVOID unused)
+{
+    int wasOurs = 0;
+    (void)unused;
+    for (;;) {
+        HWND fg = GetForegroundWindow();
+        DWORD pid = 0;
+        int ours;
+        Sleep(100);
+        if (fg) GetWindowThreadProcessId(fg, &pid);
+        ours = pid == GetCurrentProcessId();
+        if (wasOurs && !ours) ClipCursor(NULL); // the clip is global; do not keep it after an alt-tab
+        wasOurs = ours;
+    }
+}
+
+// The options menu's "Borderless window" (enginefix_hook.lua) is stored with the game's settings; until it has
+// been saved there, [qol] borderless decides. *from says which.
+static int BorderlessWanted(const char **from)
+{
+    HKEY k;
+    char v[32];
+    DWORD type, n = sizeof v - 1;
+    LONG r = RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\CD Projekt RED\\Witcher\\Settings", 0, KEY_QUERY_VALUE, &k);
+    if (r == ERROR_SUCCESS) {
+        r = RegQueryValueExA(k, "EngineFixBorderless", NULL, &type, (BYTE *)v, &n);
+        RegCloseKey(k);
+        if (r == ERROR_SUCCESS && type == REG_SZ) {
+            v[n] = 0;
+            *from = "options menu";
+            return atof(v) > 0;
+        }
+    }
+    *from = "ini";
+    return IniFlag("qol", "borderless", 0);
+}
+
+static const char *ApplyBorderless(void)
+{
+    static const BYTE style[5] = { 0xBE, 0x00, 0x00, 0xCA, 0x02 };
+    BYTE popup[5] = { 0xBE, 0x00, 0x00, 0x00, 0x82 }, code[8];
+    size_t i;
+    HANDLE t;
+    if (!BytesMatch(BL_STYLE, style, sizeof style)) return "skipped (bytes differ)";
+    for (i = 0; i < sizeof kBlSites / sizeof kBlSites[0]; i++)
+        if (!BytesMatch(kBlSites[i].at, kBlSites[i].orig, kBlSites[i].len)) return "skipped (bytes differ)";
+    if (!WriteCode(BL_STYLE, popup, sizeof popup)) return "FAILED (VirtualProtect)";
+    for (i = 0; i < sizeof kBlSites / sizeof kBlSites[0]; i++) {
+        const BlSite *s = &kBlSites[i];
+        BYTE *p = code;
+        if (s->len == 8) { *p++ = 0x83; *p++ = 0xEC; *p++ = 0x10; } // keep the sub esp,0x10
+        *p++ = 0xE8;
+        *(DWORD *)p = (DWORD)BorderlessFullscreen - (s->at + (DWORD)(p - code) + 4);
+        if (!WriteCode(s->at, code, s->len)) return "FAILED (VirtualProtect)";
+    }
+    t = CreateThread(NULL, 0, BorderlessThread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    return "applied (takes effect in windowed mode: options menu, full screen off)";
+}
+
 // ---- Graphics detail ([graphics] detail) --------------------------------------
 // The engine's draw distances live in g_cAuroraSettings (constructor FUN_00401190, object at 0x00C500E8;
 // each member is registered as a console variable by name, "push var; push name" at the addresses below).
@@ -2069,6 +2165,12 @@ static void TryPatch(void)
     Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
+    {
+        const char *from;
+        int on = BorderlessWanted(&from);
+        Log("qol 3 (borderless window instead of a framed one in windowed mode): %s (set in the %s)",
+            on ? ApplyBorderless() : "off", from);
+    }
     {
         int level = IniInt("graphics", "detail", 0), hotkey = IniFlag("debug", "detail_hotkey", 0);
         if (level < 0 || level > 2) level = 0;

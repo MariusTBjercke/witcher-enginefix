@@ -14,12 +14,17 @@
 --    under it. It asks the same "Are you sure you want to exit?" (1749) and then exits the way the main
 --    menu's Exit button does (g_pClientExoApp:ExitProgram).
 --
+-- 4. "Borderless window" in Options > Graphics (QoL 3). A checkbox setting like the game's own (CCheckBoxSetting,
+--    RegisterLuaSetting); the game stores it with its other settings (registry value EngineFixBorderless), and
+--    dinput8.dll reads it at startup, so a change asks for a restart like "Full screen" does.
+--
 -- Run at startup by the shared loader testtools.lua.
 
 local ENABLED = true           -- false turns the load/save list and journal fix off
 local LOG_TIMING = false       -- true appends the list build time to System\witcher_enginefix_lua.log
 local KIDNAP_DOOR_FIX = true   -- false turns the "The Source" door fix off
 local PAUSE_EXIT_BUTTON = true -- false removes the "Exit game" button from the pause menu
+local BORDERLESS_OPTION = true -- false removes "Borderless window" from Options > Graphics
 
 -- Appends one line to System\witcher_enginefix_lua.log (the game's working directory).
 local function Log(sText)
@@ -195,4 +200,28 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
     end
 elseif PAUSE_EXIT_BUTTON then
     Log("pause menu: Exit game button not added (CSkinLoader, CGuiNewSystemPanel or createOKCancelPanel missing)")
+end
+
+if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting then
+    local ok, err = pcall(function()
+        CEngineFixBorderlessSetting = makeClass(CCheckBoxSetting)
+        CEngineFixBorderlessSetting.new = function(self)
+            return CEngineFixBorderlessSetting:create()
+        end
+        CEngineFixBorderlessSetting.GetClassName = function(self) return "EngineFixBorderless" end
+        CEngineFixBorderlessSetting.GetCategory = function(self) return "Graphics" end
+        CEngineFixBorderlessSetting.GetDefaultValue = function(self) return 0 end
+        -- No talk-table entry for this one; English only. It applies when "Full screen" is off.
+        CEngineFixBorderlessSetting.GetSettingName = function(self) return "Borderless window (when not full screen)" end
+        CEngineFixBorderlessSetting.ApplyChanges = function(self)
+            self:ApplyChangesInternal()
+        end
+        CEngineFixBorderlessSetting.NeedsRestart = function(self)
+            return self.lm_ChangedValue ~= nil and self.lm_ChangedValue ~= self.lm_Value
+        end
+        local pSetting = CEngineFixBorderlessSetting:new()
+        RegisterLuaSetting(pSetting)
+        pSetting:Read() -- the game read its settings before this script ran
+    end)
+    if not ok then Log("options: Borderless window not added: " .. tostring(err)) end
 end

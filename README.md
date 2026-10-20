@@ -18,6 +18,7 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 | **Cursor jumps to the top-left** | After the mouse has turned the camera (active pause or Shift in the over-the-shoulder camera), the cursor came back in the top-left area at resolutions above 1366x768. It now comes back in the middle of the screen. | on |
 | **Exit game from the pause menu** | Quality of life: the pause menu (Esc) gets an "Exit game" button under "Exit to main menu", with the same "Are you sure?" question, so you no longer have to go through the main menu to quit. | on |
 | **Camera in active pause (over-the-shoulder)** | Quality of life: in the over-the-shoulder camera, active pause (Space) shows the cursor and only edge scrolling moved the camera. Hold the middle mouse button to turn it with the mouse, as in the other cameras. | on |
+| **Borderless window** | Quality of life, off by default: Options > Graphics > "Borderless window (when not full screen)". With full screen off and the desktop resolution, the game fills the screen without a border and alt-tab is instant, while the cursor, edge camera turn and pause-in-the-background behave as in full screen. | off |
 | **Longer draw distances** | Optional, off by default: `[graphics] detail=1` (high) or `2` (ultra) keeps full-detail models, trees, grass, shadows and lights out to 1.5-3× the game's distances, on top of your options menu. No debug mode or console commands needed. On a modern PC it cost under 0.5 ms per frame (72 FPS held at 4K). | off |
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
@@ -63,6 +64,7 @@ fix10=1  ; cursor comes back in the middle of the screen after mouse look, not i
 
 [qol]
 ots_pause_mmb_camera=1   ; over-the-shoulder camera: hold the middle mouse button to turn it in active pause
+borderless=0             ; borderless window; normally set in Options > Graphics, this line counts until the menu has saved it
 
 [graphics]
 detail=0   ; longer LOD, grass, shadow and light distances: 0 = the game's own, 1 = high, 2 = ultra
