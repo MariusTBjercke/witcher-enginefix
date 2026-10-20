@@ -82,9 +82,7 @@ if KIDNAP_DOOR_FIX and CGuiInGame and CGuiInGame.PerformGUIActionsOnGameLoadingE
     end
 end
 
-local tSystemDefs = g_aGuiDefinitions and g_aGuiDefinitions["SystemPanel"]
-if PAUSE_EXIT_BUTTON and tSystemDefs and tSystemDefs.Controls and tSystemDefs.Controls["ExitButton"] and
-   CGuiNewSystemPanel and g_GuiLayoutManager and createOKCancelPanel then
+if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel and createOKCancelPanel then
     local QUIT = "EngineFixExitGameButton"
     local STEP = -66 -- the buttons above are 62-66 units apart
 
@@ -95,15 +93,29 @@ if PAUSE_EXIT_BUTTON and tSystemDefs and tSystemDefs.Controls and tSystemDefs.Co
         return c
     end
 
-    -- Same button as "Exit to main menu" (gui_defs_sys_v2.luc sysDefineLabel), one step lower.
-    local tDef = Copy(tSystemDefs.Controls["ExitButton"])
-    tDef.Position.Y = tDef.Position.Y + STEP
-    if tDef.HotSpot and tDef.HotSpot.Position then
-        tDef.HotSpot.Position.Y = tDef.HotSpot.Position.Y + STEP
+    -- Same button as "Exit to main menu" (gui_defs_sys_v2.luc sysDefineLabel), one step lower. The
+    -- definitions are (re)built by g_SkinLoader:Load (gui_defs_*_v2), which runs after this script.
+    local function AddButtonDef()
+        local tSystemDefs = g_aGuiDefinitions and g_aGuiDefinitions["SystemPanel"]
+        local tControls = tSystemDefs and tSystemDefs.Controls
+        if not (tControls and tControls["ExitButton"] and g_GuiLayoutManager) or tControls[QUIT] then return end
+        local tDef = Copy(tControls["ExitButton"])
+        tDef.Position.Y = tDef.Position.Y + STEP
+        if tDef.HotSpot and tDef.HotSpot.Position then
+            tDef.HotSpot.Position.Y = tDef.HotSpot.Position.Y + STEP
+        end
+        tDef.String.StrRef = "GuiLMMExit"
+        tDef.Scripts = { OnClick = g_GuiLayoutManager:PerformButtonAction(QUIT) }
+        tControls[QUIT] = tDef
     end
-    tDef.String.StrRef = "GuiLMMExit"
-    tDef.Scripts = { OnClick = g_GuiLayoutManager:PerformButtonAction(QUIT) }
-    tSystemDefs.Controls[QUIT] = tDef
+
+    local origLoad = CSkinLoader.Load
+    CSkinLoader.Load = function(self)
+        origLoad(self)
+        local ok, err = pcall(AddButtonDef)
+        if not ok then Log("pause menu: Exit game button not defined: " .. tostring(err)) end
+    end
+    pcall(AddButtonDef) -- in case the skin is already loaded
 
     local function ExitGame()
         Log("pause menu: Exit game")
@@ -118,7 +130,7 @@ if PAUSE_EXIT_BUTTON and tSystemDefs and tSystemDefs.Controls and tSystemDefs.Co
         local self = origNew(unpack(arg))
         local ok, err = pcall(function()
             local pButton = self.lm_pPanel:GetControl(QUIT)
-            if not pButton then return end
+            if not pButton then Log("pause menu: Exit game button missing from the panel"); return end
             pButton:PlayAnimation("Selected", "Hide", false, 0)
             self.lm_tButtons[QUIT] = pButton
             g_GuiLayoutManager:SetButtonAction(QUIT, function()
@@ -141,4 +153,6 @@ if PAUSE_EXIT_BUTTON and tSystemDefs and tSystemDefs.Controls and tSystemDefs.Co
             if g_GuiInGame then pButton:EnableButton() else pButton:DisableButton() end
         end
     end
+elseif PAUSE_EXIT_BUTTON then
+    Log("pause menu: Exit game button not added (CSkinLoader, CGuiNewSystemPanel or createOKCancelPanel missing)")
 end
