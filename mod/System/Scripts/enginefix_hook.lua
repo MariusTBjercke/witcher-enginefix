@@ -4,8 +4,8 @@
 --    every item already in the list to the content panel, so filling a list is quadratic (531 saves
 --    took ~14 s, 51 saves ~0.25 s). While CGuiNewSystemLoadPanel:SetType (load/save list) or
 --    CGuiNewDiaryPanel:OnTabSelect (journal tabs) fills its lists, items are added without the per-item
---    Refresh; a list is refreshed as soon as any other of its methods is called, and once at the end.
---    Every other list keeps the original behaviour.
+--    Refresh, and each touched list is refreshed once at the end (for the journal also right before it
+--    selects the last selected entry). Every other list keeps the original behaviour.
 -- 2. Locked kidnappers' door in "The Source" (Chapter III). After every loading screen this runs
 --    Data\Override\EngineFix\ef_q3043_door.ncs, which unlocks the door only when the quest is at
 --    that step and the game failed to unlock it (see that script's .nss).
@@ -51,33 +51,20 @@ if ENABLED and CListControl and CListControl.Refresh then
         nBatched = nBatched + 1
     end
 
-    -- Any other list method sees the list as the original would have left it: a pending refresh runs first.
-    -- So only runs of consecutive AddListItem calls are merged into one Refresh.
-    local NO_FLUSH = { AddListItem = true, _AddListItem = true, Refresh = true, SetIconState = true, GetIconState = true }
-    -- The wrapper is made in a function of its own: in Lua 5.0 closures created in a for loop share the loop's
-    -- variables, so every wrapper would call the last method.
-    local function Flushing(orig)
-        return function(self, ...)
-            if dirtyLists[self] then self:Refresh() end
-            return orig(self, unpack(arg))
-        end
-    end
-    local methods = {}
-    for k, v in pairs(CListControl) do
-        if type(v) == "function" and not NO_FLUSH[k] then methods[k] = v end
-    end
-    local nWrapped = 0
-    for k, orig in pairs(methods) do
-        CListControl[k] = Flushing(orig)
-        nWrapped = nWrapped + 1
-    end
-    if LOG_TIMING then Log("lists: " .. nWrapped .. " CListControl methods flush a pending refresh first") end
     CListControl.Refresh = function(self)
         dirtyLists[self] = nil
         return origRefresh(self)
     end
 
     local clock = os and os.clock
+
+    local function RefreshDirty()
+        local lists = dirtyLists
+        dirtyLists = {}
+        for list in pairs(lists) do
+            list:Refresh()
+        end
+    end
 
     -- Runs fn with AddListItem batched, then refreshes every list it left dirty.
     local function Batched(sWhat, fn, ...)
@@ -87,13 +74,7 @@ if ENABLED and CListControl and CListControl.Refresh then
         local ok, err = pcall(fn, unpack(arg))
         batching = batching - 1
         local t1 = clock and clock()
-        if batching == 0 then
-            local lists = dirtyLists
-            dirtyLists = {}
-            for list in pairs(lists) do
-                list:Refresh()
-            end
-        end
+        if batching == 0 then RefreshDirty() end
         if LOG_TIMING and clock then
             Log(string.format("%s: %d items, fill %.0f ms, final refresh %.0f ms", sWhat, nBatched, (t1 - t0) * 1000,
                 (clock() - t1) * 1000))
@@ -116,6 +97,14 @@ if ENABLED and CListControl and CListControl.Refresh then
         local origOnTabSelect = CGuiNewDiaryPanel.OnTabSelect
         CGuiNewDiaryPanel.OnTabSelect = function(self, nTab, bSwitch)
             Batched("journal tab " .. tostring(nTab), origOnTabSelect, self, nTab, bSwitch)
+        end
+        -- OnTabSelect ends by selecting the entry that was selected last; the list is laid out first.
+        if CGuiNewDiaryPanel.ClickItem then
+            local origClickItem = CGuiNewDiaryPanel.ClickItem
+            CGuiNewDiaryPanel.ClickItem = function(self, ...)
+                if batching > 0 then RefreshDirty() end
+                return origClickItem(self, unpack(arg))
+            end
         end
     end
 end
