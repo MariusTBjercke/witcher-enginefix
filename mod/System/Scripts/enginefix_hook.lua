@@ -9,12 +9,17 @@
 -- 2. Locked kidnappers' door in "The Source" (Chapter III). After every loading screen this runs
 --    Data\Override\EngineFix\ef_q3043_door.ncs, which unlocks the door only when the quest is at
 --    that step and the game failed to unlock it (see that script's .nss).
+-- 3. "Exit game" in the pause menu (QoL). The in-game system panel (Esc) only had "Exit to main menu".
+--    A copy of that button, labelled with the main menu's "Exit game" text (StrRef 81), goes right
+--    under it. It asks the same "Are you sure you want to exit?" (1749) and then exits the way the main
+--    menu's Exit button does (g_pClientExoApp:ExitProgram).
 --
 -- Run at startup by the shared loader testtools.lua.
 
 local ENABLED = true           -- false turns the load/save list fix off
 local LOG_TIMING = false       -- true appends the list build time to System\witcher_enginefix_lua.log
 local KIDNAP_DOOR_FIX = true   -- false turns the "The Source" door fix off
+local PAUSE_EXIT_BUTTON = true -- false removes the "Exit game" button from the pause menu
 
 -- Appends one line to System\witcher_enginefix_lua.log (the game's working directory).
 local function Log(sText)
@@ -74,5 +79,66 @@ if KIDNAP_DOOR_FIX and CGuiInGame and CGuiInGame.PerformGUIActionsOnGameLoadingE
     -- Called from ef_q3043_door.ncs through RunClientLua when it had to unlock the door.
     function EngineFix_KidnapDoorUnlocked()
         Log("The Source: the kidnappers' hideout door was still locked; unlocked it")
+    end
+end
+
+local tSystemDefs = g_aGuiDefinitions and g_aGuiDefinitions["SystemPanel"]
+if PAUSE_EXIT_BUTTON and tSystemDefs and tSystemDefs.Controls and tSystemDefs.Controls["ExitButton"] and
+   CGuiNewSystemPanel and g_GuiLayoutManager and createOKCancelPanel then
+    local QUIT = "EngineFixExitGameButton"
+    local STEP = -66 -- the buttons above are 62-66 units apart
+
+    local function Copy(t)
+        if type(t) ~= "table" then return t end
+        local c = {}
+        for k, v in pairs(t) do c[k] = Copy(v) end
+        return c
+    end
+
+    -- Same button as "Exit to main menu" (gui_defs_sys_v2.luc sysDefineLabel), one step lower.
+    local tDef = Copy(tSystemDefs.Controls["ExitButton"])
+    tDef.Position.Y = tDef.Position.Y + STEP
+    if tDef.HotSpot and tDef.HotSpot.Position then
+        tDef.HotSpot.Position.Y = tDef.HotSpot.Position.Y + STEP
+    end
+    tDef.String.StrRef = "GuiLMMExit"
+    tDef.Scripts = { OnClick = g_GuiLayoutManager:PerformButtonAction(QUIT) }
+    tSystemDefs.Controls[QUIT] = tDef
+
+    local function ExitGame()
+        Log("pause menu: Exit game")
+        pcall(PlayGuiSound, "gui_quit", 0)
+        if g_pClientExoApp then
+            g_pClientExoApp:ExitProgram(0)
+        end
+    end
+
+    local origNew = CGuiNewSystemPanel.new
+    CGuiNewSystemPanel.new = function(...)
+        local self = origNew(unpack(arg))
+        local ok, err = pcall(function()
+            local pButton = self.lm_pPanel:GetControl(QUIT)
+            if not pButton then return end
+            pButton:PlayAnimation("Selected", "Hide", false, 0)
+            self.lm_tButtons[QUIT] = pButton
+            g_GuiLayoutManager:SetButtonAction(QUIT, function()
+                createOKCancelPanel("GuiLExitToMainMenu", nil, function()
+                    self:ToggleOff()
+                    ExitGame()
+                end, self, nil)
+            end)
+        end)
+        if not ok then Log("pause menu: Exit game button not added: " .. tostring(err)) end
+        return self
+    end
+
+    -- Enabled exactly when "Exit to main menu" is: in game, not when the panel is opened from the main menu.
+    local origUnToggleOff = CGuiNewSystemPanel.UnToggleOff
+    CGuiNewSystemPanel.UnToggleOff = function(self, sStartingPanel, bEndGame)
+        origUnToggleOff(self, sStartingPanel, bEndGame)
+        local pButton = self.lm_tButtons and self.lm_tButtons[QUIT]
+        if pButton then
+            if g_GuiInGame then pButton:EnableButton() else pButton:DisableButton() end
+        end
     end
 end

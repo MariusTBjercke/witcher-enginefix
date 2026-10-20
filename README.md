@@ -16,6 +16,7 @@ Crash and performance fixes for **The Witcher: Enhanced Edition**. A small DLL t
 | **Hair depends on frame rate** | Hair damping was applied once per frame, so hair moved differently above 60 FPS. It now behaves as at 60 FPS at any frame rate. | on |
 | **Locked door in "The Source"** | Chapter III: Dandelion leads you to Alvin's kidnappers, but their door stays locked. The door is now unlocked when the game failed to, also in saves that are already stuck there. | on |
 | **Cursor jumps to the top-left** | After the mouse has turned the camera (active pause or Shift in the over-the-shoulder camera), the cursor came back in the top-left area at resolutions above 1366x768. It now comes back in the middle of the screen. | on |
+| **Exit game from the pause menu** | Quality of life: the pause menu (Esc) gets an "Exit game" button under "Exit to main menu", with the same "Are you sure?" question, so you no longer have to go through the main menu to quit. | on |
 | **Camera in active pause (over-the-shoulder)** | Quality of life: in the over-the-shoulder camera, active pause (Space) shows the cursor and only edge scrolling moved the camera. Hold the middle mouse button to turn it with the mouse, as in the other cameras. | on |
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
@@ -65,7 +66,7 @@ ots_pause_mmb_camera=1   ; over-the-shoulder camera: hold the middle mouse butto
 
 The `[debug]` section holds diagnostics for development (logging only); leave them off.
 
-Two fixes are switched in `System\Scripts\enginefix_hook.lua` instead: `local ENABLED = false` turns off the menu's Lua part, `local KIDNAP_DOOR_FIX = false` the "The Source" door fix.
+Three are switched in `System\Scripts\enginefix_hook.lua` instead: `local ENABLED = false` turns off the menu's Lua part, `local KIDNAP_DOOR_FIX = false` the "The Source" door fix, `local PAUSE_EXIT_BUTTON = false` the pause menu's "Exit game" button.
 
 ## Compatibility
 
