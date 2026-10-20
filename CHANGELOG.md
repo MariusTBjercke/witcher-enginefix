@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- The Ctrl+F12 on-screen message now also shows without DXVK. Windows' own Direct3D 9 rewrites the device's Present function after the first frames, which unhooked the message; it is hooked again when that happens.
+
 ## 0.5.0
 
 - Graphics detail (optional, off by default): `[graphics] detail=1` (high) or `2` (ultra) in the ini multiplies the engine's LOD distances for scenery, creatures and trees, grass range, shadow distance and shadow-casting lights, how far lights stay on, decal and weapon effect distances, and the water reflection texture size, on top of what the options menu sets. No debug mode or console commands. At 4K on a modern PC ultra cost under 0.5 ms per frame. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen for a moment (`[graphics] hotkey`, on).

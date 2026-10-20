@@ -78,7 +78,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.5.0"
+#define ENGINEFIX_VERSION "0.5.1"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -1423,9 +1423,21 @@ static DWORD g_frameTid, g_samplerTick;
 static int g_slow, g_lagSecs, g_away, g_backOpen, g_devHooked;
 static double g_backAway;
 static HWND g_gameWnd;
-static void **g_hookedVt;
-static Present_t g_realPresent;
-static Reset_t g_realReset;
+// Hooked vtables with their original Present/Reset. Windows' own d3d9 keeps the vtable in heap memory and
+// rewrites its Present slot after a while (DXVK does not), and could switch vtables; both are hooked again.
+// PresentHook calls the original of the vtable the device has now.
+#define MAX_HOOKED_VT 4
+static struct { void **vt; Present_t present; Reset_t reset; } g_vts[MAX_HOOKED_VT];
+static volatile LONG g_nVts;
+
+static int VtIndex(void *dev)
+{
+    void **vt = *(void ***)dev;
+    LONG i, n = g_nVts;
+    for (i = 0; i < n; i++)
+        if (g_vts[i].vt == vt) return i;
+    return 0; // a copy of a hooked vtable (it points to us): the first original
+}
 static volatile LONG g_probeN, g_probeUs, g_probeMaxUs; // Sleep(1) probe: count, total and max in µs
 static LONG g_probeNPrev, g_probeUsPrev;
 // Return latency: when the game window gets the focus (WinEvent), the time to the next frame and the next Present.
@@ -1524,7 +1536,7 @@ static HRESULT WINAPI PresentHook(void *dev, const RECT *src, const RECT *dst, H
         }
     }
     QueryPerformanceCounter(&a);
-    hr = g_realPresent(dev, src, dst, wnd, dirty);
+    hr = g_vts[VtIndex(dev)].present(dev, src, dst, wnd, dirty);
     QueryPerformanceCounter(&b);
     if (g_fgState == 2 && GetCurrentThreadId() == g_frameTid) {
         LONG pres = (LONG)(b.QuadPart * 1000000 / g_qpf.QuadPart) - g_fgAtUs;
@@ -1548,7 +1560,7 @@ static HRESULT WINAPI ResetHook(void *dev, DWORD *pp)
     HRESULT hr;
     if (g_osdFont && g_osdFontDev == dev) ((ComCall_t)VT(g_osdFont, 16))(g_osdFont); // OnLostDevice
     QueryPerformanceCounter(&a);
-    hr = g_realReset(dev, pp);
+    hr = g_vts[VtIndex(dev)].reset(dev, pp);
     QueryPerformanceCounter(&b);
     if (g_osdFont && g_osdFontDev == dev && hr == 0) ((ComCall_t)VT(g_osdFont, 17))(g_osdFont); // OnResetDevice
     __try { // D3DPRESENT_PARAMETERS
@@ -1569,41 +1581,73 @@ static void ModuleOf(const void *addr, char *name, size_t n)
     strcpy_s(name, n, slash ? slash + 1 : path);
 }
 
-// Hooks Present and Reset in the device's vtable once. A later device with another vtable is not hooked
-// again: re-hooking a slot that an overlay has meanwhile wrapped around ours would make us call ourselves.
-// Called from the main loop (frame log) and from the detail hotkey's thread; only one of them hooks.
+// Hooks Present and Reset in the device's current vtable (up to MAX_HOOKED_VT vtables). A hooked vtable whose
+// slot no longer points to us is hooked again only when the new function is in the same module as the one we
+// saved (d3d9 rewrote its own slot); a function elsewhere is an overlay wrapping our hook, and hooking that again
+// would make us call ourselves. Called from the main loop (frame log, once a second) and from the detail
+// hotkey's thread (while the on-screen message shows); one at a time.
+static int SameModule(const void *a, const void *b)
+{
+    HMODULE ma = NULL, mb = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)a, &ma);
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)b, &mb);
+    return ma && ma == mb;
+}
+
+// The slots of a vtable we hooked were rewritten by d3d9 itself: take its new functions and hook again.
+static void RehookSlots(LONG i)
+{
+    void **vt = g_vts[i].vt;
+    DWORD old;
+    int pres = vt[17] != (void *)PresentHook && SameModule(vt[17], (void *)g_vts[i].present);
+    int reset = vt[16] != (void *)ResetHook && SameModule(vt[16], (void *)g_vts[i].reset);
+    static int logs;
+    if (!pres && !reset) return;
+    if (!VirtualProtect(&vt[16], 2 * sizeof(void *), PAGE_READWRITE, &old)) return;
+    if (pres) { g_vts[i].present = (Present_t)vt[17]; vt[17] = (void *)PresentHook; }
+    if (reset) { g_vts[i].reset = (Reset_t)vt[16]; vt[16] = (void *)ResetHook; }
+    VirtualProtect(&vt[16], 2 * sizeof(void *), old, &old);
+    if (logs++ < 5) Log("frame log: d3d9 rewrote its %s slot; hooked again", pres && reset ? "Present and Reset" : pres ? "Present" : "Reset");
+}
+
 static void HookDevice(void)
 {
-    static volatile LONG claim;
+    static volatile LONG busy;
     void *dev = NULL, **vt;
     DWORD old, cp[4] = { 0 }; // D3DDEVICE_CREATION_PARAMETERS: adapter, device type, focus window, flags
     char vtMod[64], presMod[64];
+    LONG i, n;
     __try { dev = *(void **)GAME_DEVICE; } __except (EXCEPTION_EXECUTE_HANDLER) {}
     if (!dev) return;
     vt = *(void ***)dev;
-    if (g_devHooked) {
-        if (vt != g_hookedVt && g_devHooked == 1) {
-            g_devHooked = 2;
-            Log("frame log: the game has a device with another vtable now; Present is no longer measured");
+    if (InterlockedCompareExchange(&busy, 1, 0) != 0) return;
+    n = g_nVts;
+    for (i = 0; i < n; i++)
+        if (g_vts[i].vt == vt) {
+            RehookSlots(i);
+            busy = 0;
+            return;
         }
-        return;
-    }
-    if (InterlockedCompareExchange(&claim, 1, 0) != 0) return;
-    g_devHooked = 1;
+    if (vt[17] == (void *)PresentHook || n >= MAX_HOOKED_VT) { busy = 0; return; }
     if (!VirtualProtect(&vt[16], 2 * sizeof(void *), PAGE_READWRITE, &old)) {
         Log("frame log: Present hook FAILED (VirtualProtect)");
+        busy = 0;
         return;
     }
-    g_realReset = (Reset_t)vt[16];
-    g_realPresent = (Present_t)vt[17];
+    g_vts[n].vt = vt;
+    g_vts[n].reset = (Reset_t)vt[16];
+    g_vts[n].present = (Present_t)vt[17];
+    InterlockedIncrement(&g_nVts); // the entry is complete before our hook can be reached through this vtable
     vt[16] = (void *)ResetHook;
     vt[17] = (void *)PresentHook;
     VirtualProtect(&vt[16], 2 * sizeof(void *), old, &old);
-    g_hookedVt = vt;
+    g_devHooked = 1;
+    busy = 0;
     if (((HRESULT (WINAPI *)(void *, DWORD *))vt[9])(dev, cp) == 0 && cp[2]) g_gameWnd = (HWND)cp[2]; // GetCreationParameters
     ModuleOf(vt, vtMod, sizeof vtMod);
-    ModuleOf((void *)g_realPresent, presMod, sizeof presMod);
-    Log("frame log: Present and Reset hooked (device %p, vtable in %s, Present in %s, window %p)", dev, vtMod, presMod, g_gameWnd);
+    ModuleOf((void *)g_vts[n].present, presMod, sizeof presMod);
+    Log("frame log: Present and Reset hooked%s (device %p, vtable in %s, Present in %s, window %p)",
+        n ? " in the device's new vtable" : "", dev, vtMod, presMod, g_gameWnd);
 }
 
 static DWORD WINAPI SleepProbeThread(LPVOID unused)
@@ -2339,12 +2383,13 @@ static DWORD WINAPI DetailThread(LPVOID unused)
                 DetailLogLevel(level, " (Ctrl+F12)");
                 sprintf_s(msg, sizeof msg, "Graphics detail: %s   (Ctrl+F12)", kDetailTitles[level]);
                 OsdShow(msg, 2500);
-                if (!g_devHooked) HookDevice(); // draws the message
+                HookDevice(); // draws the message
                 down = now;
                 continue;
             }
             down = now;
         }
+        if (g_osdUntil) HookDevice(); // the device may have a new vtable (Windows' own d3d9)
         DetailApply(level);
     }
 }
