@@ -49,4 +49,12 @@ For measuring, `[debug] detail_hotkey=1` makes Ctrl+F12 cycle the level in game 
 
 ## Verification
 
-Harness (unpacked exe mapped at its addresses, the constructor's and the grass slider's writes simulated): levels 0, 1 and 2 give the values in the table, slider changes are rescaled, and nothing compounds. Not tested in game yet: the visual effect of each setting and the cost in frame rate. The factors are a first guess until that is measured.
+Harness (unpacked exe mapped at its addresses, the constructor's and the grass slider's writes simulated): levels 0, 1 and 2 give the values in the table, slider changes are rescaled, and nothing compounds.
+
+In game, 2026-10-20 (3840x2160, DXVK, capped at 72 FPS, all menu options at maximum; standing still, the level cycled with Ctrl+F12):
+
+- The game's own writes were picked up as planned: the constructor's values at startup, the grass slider (`fGrassVisibilityRange 60 -> 120`) and `startup.luc`'s decal and weapon distances 3 s later.
+- Vizima at night and the swamp: 72.0 FPS at every level. The main thread's own work per frame (outside `Present`) went up by 0-0.5 ms from off to ultra in back-to-back measurements at the same spot (Vizima ~7.0 → 7.5 ms, swamp ~5.5 → 5.8 ms), out of a 13.9 ms frame at 72 FPS. The GPU kept up (it would show as missed frames under the cap).
+- Visible: distant lights in Vizima at night (they stay on much farther away), trees and grass in the swamp. No artefacts noticed.
+
+Not measured: combat with many creatures, and slower PCs. Hence off by default.

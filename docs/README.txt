@@ -34,6 +34,12 @@ Quality of life:
 - "Exit game" in the pause menu (Esc), under "Exit to main menu", with the same
   "Are you sure?" question.
 
+Optional, off by default:
+- Longer draw distances: [graphics] detail=1 (high) or 2 (ultra) in the ini
+  keeps full-detail models, trees, grass, shadows and lights out to 1.5-3x the
+  game's distances, on top of the options menu. Costs some frame rate on older
+  PCs.
+
 
 INSTALLATION
 ------------
@@ -57,7 +63,8 @@ Files installed:
 CONFIGURATION
 -------------
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
-The [qol] section holds the quality-of-life changes (on by default). The [debug]
+The [qol] section holds the quality-of-life changes (on by default). [graphics]
+detail=1 or 2 turns on the longer draw distances (0 = off). The [debug]
 section holds diagnostics for development; leave them off.
 In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu
 fix's Lua part, "local KIDNAP_DOOR_FIX = false" the "The Source" door fix and
