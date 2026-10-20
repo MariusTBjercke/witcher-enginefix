@@ -15,7 +15,7 @@ How the panel is built (Steam 1.5.0.1304, `System\Scripts`):
 
 `enginefix_hook.lua` (run by `testtools.lua` near the end of startup, before any system panel exists):
 
-- `g_aGuiDefinitions` is not there yet when the hook runs: `startup.luc` calls `g_SkinLoader:ReadDefaults()` and `g_SkinLoader:Load()` (`CSkinLoader.luc`, which plays `gui_defs*_v2`) right after `testtools`, and the skin can be loaded again later. So `CSkinLoader.Load` is wrapped, and after every load it the `ExitButton` definition to `EngineFixExitGameButton`, 66 units lower (Y -262, between "Exit to main menu" and Resume), with `StrRef = "GuiLMMExit"` and its own `PerformButtonAction` name;
+- `g_aGuiDefinitions` is not there yet when the hook runs: `startup.luc` calls `g_SkinLoader:ReadDefaults()` and `g_SkinLoader:Load()` (`CSkinLoader.luc`, which plays `gui_defs*_v2`) right after `testtools`, and the skin can be loaded again later. So `CSkinLoader.Load` is wrapped, and after every load it copies the `ExitButton` definition to `EngineFixExitGameButton`, 66 units lower (Y -262, between "Exit to main menu" and Resume), with `StrRef = "GuiLMMExit"` and its own `PerformButtonAction` name;
 - wraps `CGuiNewSystemPanel.new`: after the original, hides the new button's `Selected` layer and binds it to the same `createOKCancelPanel("GuiLExitToMainMenu", ...)`, whose OK closes the panel and calls `g_pClientExoApp:ExitProgram(0)`;
 - wraps `UnToggleOff` so the button is enabled exactly when "Exit to main menu" is (in game).
 
