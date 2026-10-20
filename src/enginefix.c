@@ -118,12 +118,18 @@ static BOOL WriteCode(DWORD addr, const BYTE *bytes, size_t len)
     return TRUE;
 }
 
-static int IniFlag(const char *section, const char *key, int def)
+static void IniPath(char *path) // MAX_PATH chars
 {
-    char path[MAX_PATH], *slash;
+    char *slash;
     GetModuleFileNameA(g_self, path, MAX_PATH);
     slash = strrchr(path, '\\');
     strcpy_s(slash ? slash + 1 : path, MAX_PATH - (slash ? (slash + 1 - path) : 0), "witcher_enginefix.ini");
+}
+
+static int IniFlag(const char *section, const char *key, int def)
+{
+    char path[MAX_PATH];
+    IniPath(path);
     return GetPrivateProfileIntA(section, key, def, path) != 0;
 }
 
@@ -1359,54 +1365,363 @@ static const char *ApplyTexWaitFix(void)
 // to FUN_0079a600 at 0x007532A5, a singleton getter) and logs every stretch of 3+ s below 30 FPS: frame
 // rate, worst frame, and how much of it the game was in the foreground, had an active caption, or
 // considered itself inactive (0x00C2A324 = 0, the main loop then sleeps 1 s per frame).
+// To find out what the alt-tab lag is (a steady ~24 FPS after coming back, every D3D call slow, cured by
+// the next alt-tab) it also records:
+//  - time spent in IDirect3DDevice9::Present (vtable hook on the game's device at [0x00C587BC]) and a
+//    frame-time histogram;
+//  - how long Sleep(1) really lasts in the game process (a probe thread, 10 times a second). Windows 11
+//    stops honouring a process's timer resolution while its window is minimized or hidden; if it did not
+//    come back after an alt-tab, every timed wait in DXVK would run on 15.6 ms ticks;
+//  - a "focus back" line 10 s after each return to the game (time away, frames, Present, Sleep(1), window,
+//    display and timer state, visible windows above the game), so fine and laggy returns can be compared;
+//  - Reset calls with their parameters;
+//  - on the lag signature (4 s in a row at 10-30 FPS, in the foreground, no frame over 250 ms) the same
+//    state, and if [debug] frame_sampler names sampler.exe, a 15 s profile next to the log.
 
 #define FRAME_SITE   0x007532A5
 #define FRAME_TARGET 0x0079A600
 #define GAME_ACTIVE  0x00C2A324 // 0: main loop treats the window as inactive
 #define GAME_WINSTAT 0x00EE4754 // WINDOWINFO.dwWindowStatus from the main loop's last GetWindowInfo
+#define GAME_DEVICE  0x00C587BC // IDirect3DDevice9 *
 
 typedef void *(__cdecl *FrameTarget_t)(void);
-static LONGLONG g_fLast, g_fSecStart, g_fMax, g_slowStart, g_slowWorst;
-static double g_slowSecs, g_slowFrames, g_slowFg, g_slowCaption, g_slowInactive;
-static int g_fFrames, g_slow;
+typedef HRESULT (WINAPI *Present_t)(void *, const RECT *, const RECT *, HWND, const void *);
+typedef HRESULT (WINAPI *Reset_t)(void *, DWORD *);
+typedef HRESULT (WINAPI *DwmGetWindowAttribute_t)(HWND, DWORD, void *, DWORD);
+typedef LONG (NTAPI *NtQueryTimerResolution_t)(ULONG *, ULONG *, ULONG *);
+
+typedef struct {
+    double secs, sleepMs, sleepMax, fg, caption, inactive;
+    LONGLONG worst, presTicks, presMax;
+    int frames, presents, presentFails, sleeps, hist[6]; // frame times <10, <20, <30, <50, <100, 100+ ms
+} FrameStats;
+
+static FrameStats g_fsSec, g_fsSlow, g_fsBack; // this second, the current slow stretch, the 10 s after a return
+static LONGLONG g_fLast, g_fSecStart, g_awayStart;
+static DWORD g_frameTid, g_samplerTick;
+static int g_slow, g_lagSecs, g_away, g_backOpen, g_devHooked;
+static double g_backAway;
+static HWND g_gameWnd;
+static void **g_hookedVt;
+static Present_t g_realPresent;
+static Reset_t g_realReset;
+static volatile LONG g_probeN, g_probeUs, g_probeMaxUs; // Sleep(1) probe: count, total and max in µs
+static LONG g_probeNPrev, g_probeUsPrev;
+
+static HRESULT WINAPI PresentHook(void *dev, const RECT *src, const RECT *dst, HWND wnd, const void *dirty)
+{
+    LARGE_INTEGER a, b;
+    HRESULT hr;
+    QueryPerformanceCounter(&a);
+    hr = g_realPresent(dev, src, dst, wnd, dirty);
+    QueryPerformanceCounter(&b);
+    if (GetCurrentThreadId() == g_frameTid) { // the statistics belong to the main loop
+        LONGLONG t = b.QuadPart - a.QuadPart;
+        g_fsSec.presents++;
+        g_fsSec.presTicks += t;
+        if (t > g_fsSec.presMax) g_fsSec.presMax = t;
+        if (hr != 0) g_fsSec.presentFails++;
+    }
+    return hr;
+}
+
+static HRESULT WINAPI ResetHook(void *dev, DWORD *pp)
+{
+    LARGE_INTEGER a, b;
+    HRESULT hr;
+    QueryPerformanceCounter(&a);
+    hr = g_realReset(dev, pp);
+    QueryPerformanceCounter(&b);
+    __try { // D3DPRESENT_PARAMETERS
+        Log("frame log: Reset %.1f ms, hr %08lx: %lux%lu, %lu back buffers, swap effect %lu, windowed %lu, %lu Hz, interval %08lx",
+            (b.QuadPart - a.QuadPart) * 1000.0 / g_qpf.QuadPart, (DWORD)hr, pp[0], pp[1], pp[3], pp[6], pp[8], pp[12], pp[13]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return hr;
+}
+
+static void ModuleOf(const void *addr, char *name, size_t n)
+{
+    HMODULE m = NULL;
+    char path[MAX_PATH], *slash;
+    strcpy_s(name, n, "?");
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCSTR)addr, &m) || !GetModuleFileNameA(m, path, MAX_PATH)) return;
+    slash = strrchr(path, '\\');
+    strcpy_s(name, n, slash ? slash + 1 : path);
+}
+
+// Hooks Present and Reset in the device's vtable once. A later device with another vtable is not hooked
+// again: re-hooking a slot that an overlay has meanwhile wrapped around ours would make us call ourselves.
+static void HookDevice(void)
+{
+    void *dev = NULL, **vt;
+    DWORD old, cp[4] = { 0 }; // D3DDEVICE_CREATION_PARAMETERS: adapter, device type, focus window, flags
+    char vtMod[64], presMod[64];
+    __try { dev = *(void **)GAME_DEVICE; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (!dev) return;
+    vt = *(void ***)dev;
+    if (g_devHooked) {
+        if (vt != g_hookedVt && g_devHooked == 1) {
+            g_devHooked = 2;
+            Log("frame log: the game has a device with another vtable now; Present is no longer measured");
+        }
+        return;
+    }
+    g_devHooked = 1;
+    if (!VirtualProtect(&vt[16], 2 * sizeof(void *), PAGE_READWRITE, &old)) {
+        Log("frame log: Present hook FAILED (VirtualProtect)");
+        return;
+    }
+    g_realReset = (Reset_t)vt[16];
+    g_realPresent = (Present_t)vt[17];
+    vt[16] = (void *)ResetHook;
+    vt[17] = (void *)PresentHook;
+    VirtualProtect(&vt[16], 2 * sizeof(void *), old, &old);
+    g_hookedVt = vt;
+    if (((HRESULT (WINAPI *)(void *, DWORD *))vt[9])(dev, cp) == 0 && cp[2]) g_gameWnd = (HWND)cp[2]; // GetCreationParameters
+    ModuleOf(vt, vtMod, sizeof vtMod);
+    ModuleOf((void *)g_realPresent, presMod, sizeof presMod);
+    Log("frame log: Present and Reset hooked (device %p, vtable in %s, Present in %s, window %p)", dev, vtMod, presMod, g_gameWnd);
+}
+
+static DWORD WINAPI SleepProbeThread(LPVOID unused)
+{
+    LARGE_INTEGER a, b;
+    LONG us, m;
+    (void)unused;
+    for (;;) {
+        Sleep(100);
+        if (g_waitOff) return 0;
+        QueryPerformanceCounter(&a);
+        Sleep(1);
+        QueryPerformanceCounter(&b);
+        us = (LONG)((b.QuadPart - a.QuadPart) * 1000000 / g_qpf.QuadPart);
+        InterlockedExchangeAdd(&g_probeUs, us); // wraps after ~35 min of sleeping; readers take differences
+        InterlockedIncrement(&g_probeN);
+        do m = g_probeMaxUs; while (us > m && InterlockedCompareExchange(&g_probeMaxUs, us, m) != m);
+    }
+}
+
+static void StatsAdd(FrameStats *d, const FrameStats *s)
+{
+    int i;
+    d->secs += s->secs;
+    d->sleepMs += s->sleepMs;
+    d->fg += s->fg;
+    d->caption += s->caption;
+    d->inactive += s->inactive;
+    d->presTicks += s->presTicks;
+    d->frames += s->frames;
+    d->presents += s->presents;
+    d->presentFails += s->presentFails;
+    d->sleeps += s->sleeps;
+    if (s->sleepMax > d->sleepMax) d->sleepMax = s->sleepMax;
+    if (s->worst > d->worst) d->worst = s->worst;
+    if (s->presMax > d->presMax) d->presMax = s->presMax;
+    for (i = 0; i < 6; i++) d->hist[i] += s->hist[i];
+}
+
+// "<fps> FPS (worst frame ...); Present ...; Sleep(1) ...; game in foreground ...". frame_log readers match
+// "frames: <secs> s at <fps> FPS" and "inactive <n>%", so keep that order.
+static void StatsText(char *buf, size_t n, const FrameStats *s)
+{
+    double ms = 1000.0 / g_qpf.QuadPart, secs = s->secs > 0 ? s->secs : 1;
+    char pres[96], slp[64];
+    if (s->presents)
+        sprintf_s(pres, sizeof pres, "Present %d x, avg %.1f ms, max %.1f ms%s", s->presents, s->presTicks * ms / s->presents,
+                  s->presMax * ms, s->presentFails ? " (some failed)" : "");
+    else
+        strcpy_s(pres, sizeof pres, g_devHooked ? "no Present seen" : "Present not hooked yet");
+    if (s->sleeps) sprintf_s(slp, sizeof slp, "Sleep(1) lasts %.1f ms (max %.1f)", s->sleepMs / s->sleeps, s->sleepMax);
+    else strcpy_s(slp, sizeof slp, "Sleep(1) not measured");
+    sprintf_s(buf, n, "%.1f FPS (worst frame %.0f ms; frames <10/10-20/20-30/30-50/50-100/100+ ms: %d/%d/%d/%d/%d/%d); %s; %s; "
+              "game in foreground %.0f%%, active caption %.0f%%, treated as inactive %.0f%%",
+              s->frames / secs, s->worst * ms, s->hist[0], s->hist[1], s->hist[2], s->hist[3], s->hist[4], s->hist[5], pres, slp,
+              100 * s->fg / secs, 100 * s->caption / secs, 100 * s->inactive / secs);
+}
+
+static void ExeOf(DWORD pid, char *name, size_t n)
+{
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    char path[MAX_PATH], *slash;
+    DWORD len = MAX_PATH;
+    strcpy_s(name, n, "?");
+    if (!p) return;
+    if (QueryFullProcessImageNameA(p, 0, path, &len)) {
+        slash = strrchr(path, '\\');
+        strcpy_s(name, n, slash ? slash + 1 : path);
+    }
+    CloseHandle(p);
+}
+
+// Window, display and timer state, plus the visible windows above the game on its monitor (an overlay or
+// any window on top can make Windows compose the game's frames instead of flipping them).
+static void LogWindowState(void)
+{
+    static DwmGetWindowAttribute_t dwmAttr;
+    static NtQueryTimerResolution_t ntRes;
+    static int looked;
+    HWND w = g_gameWnd, h, fg = GetForegroundWindow();
+    RECT wr = { 0 }, cr = { 0 };
+    MONITORINFOEXA mi;
+    DEVMODEA dm;
+    ULONG resMax = 0, resMin = 0, resCur = 0;
+    int shown = 0, walked = 0;
+    if (!looked) {
+        HMODULE dwm = LoadLibraryA("dwmapi.dll");
+        looked = 1;
+        if (dwm) dwmAttr = (DwmGetWindowAttribute_t)GetProcAddress(dwm, "DwmGetWindowAttribute");
+        ntRes = (NtQueryTimerResolution_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryTimerResolution");
+    }
+    if (!w || !IsWindow(w)) { Log("  window: not known yet"); return; }
+    GetWindowRect(w, &wr);
+    GetClientRect(w, &cr);
+    memset(&mi, 0, sizeof mi);
+    mi.cbSize = sizeof mi;
+    GetMonitorInfoA(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), (MONITORINFO *)&mi);
+    memset(&dm, 0, sizeof dm);
+    dm.dmSize = sizeof dm;
+    EnumDisplaySettingsA(mi.szDevice[0] ? mi.szDevice : NULL, ENUM_CURRENT_SETTINGS, &dm);
+    if (ntRes) ntRes(&resMax, &resMin, &resCur);
+    Log("  window %ld,%ld %ldx%ld (client %ldx%ld), style %08lx, ex style %08lx%s%s; monitor %s %ld,%ld %ldx%ld, mode %lux%lu %lu Hz; "
+        "system timer %.2f ms; priority class %lx, main thread priority %d",
+        wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, cr.right, cr.bottom, (DWORD)GetWindowLongA(w, GWL_STYLE),
+        (DWORD)GetWindowLongA(w, GWL_EXSTYLE), IsIconic(w) ? ", minimized" : "", fg == w ? ", foreground" : ", NOT foreground",
+        mi.szDevice, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+        mi.rcMonitor.bottom - mi.rcMonitor.top, dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayFrequency, resCur / 10000.0,
+        GetPriorityClass(GetCurrentProcess()), GetThreadPriority(GetCurrentThread()));
+    for (h = GetWindow(w, GW_HWNDPREV); h && shown < 5 && walked < 2000; h = GetWindow(h, GW_HWNDPREV), walked++) {
+        RECT r, x;
+        DWORD pid = 0, cloaked = 0;
+        char cls[64], exe[64];
+        if (!IsWindowVisible(h) || !GetWindowRect(h, &r) || !IntersectRect(&x, &r, &mi.rcMonitor)) continue;
+        if (dwmAttr && dwmAttr(h, 14, &cloaked, sizeof cloaked) == 0 && cloaked) continue; // DWMWA_CLOAKED
+        GetClassNameA(h, cls, sizeof cls);
+        GetWindowThreadProcessId(h, &pid);
+        ExeOf(pid, exe, sizeof exe);
+        Log("  above it: %s (%s) %ld,%ld %ldx%ld, ex style %08lx", cls, exe, r.left, r.top, r.right - r.left, r.bottom - r.top,
+            (DWORD)GetWindowLongA(h, GWL_EXSTYLE));
+        shown++;
+    }
+    if (!shown) Log("  above it: no visible window on that monitor");
+}
+
+static void StartSampler(void)
+{
+    char ini[MAX_PATH], exe[MAX_PATH], out[MAX_PATH], cmd[3 * MAX_PATH], *slash;
+    SYSTEMTIME st;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    IniPath(ini);
+    GetPrivateProfileStringA("debug", "frame_sampler", "", exe, MAX_PATH, ini);
+    if (!exe[0]) return;
+    if (g_samplerTick && GetTickCount() - g_samplerTick < 5 * 60 * 1000) return; // at most one profile per 5 min
+    g_samplerTick = GetTickCount() | 1;
+    GetModuleFileNameA(g_self, out, MAX_PATH);
+    slash = strrchr(out, '\\');
+    GetLocalTime(&st);
+    sprintf_s(slash ? slash + 1 : out, MAX_PATH - (slash ? (slash + 1 - out) : 0), "enginefix_lag_%02d%02d%02d_main%lu.csv",
+              st.wHour, st.wMinute, st.wSecond, g_frameTid);
+    sprintf_s(cmd, sizeof cmd, "\"%s\" %lu 15 \"%s\" 1", exe, GetCurrentProcessId(), out);
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        Log("frame log: profiling 15 s with %s -> %s", exe, out);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        Log("frame log: could not start %s (error %lu)", exe, GetLastError());
+    }
+}
+
+static void FocusBackLog(const char *how)
+{
+    char s[640];
+    StatsText(s, sizeof s, &g_fsBack);
+    Log("focus back after %.1f s away, %s %.1f s: %s", g_backAway, how, g_fsBack.secs, s);
+    LogWindowState();
+    g_backOpen = 0;
+}
+
+static void FrameSecond(LONGLONG now)
+{
+    double secs = (double)(now - g_fSecStart) / g_qpf.QuadPart, fps = g_fsSec.frames / secs;
+    HWND fg = GetForegroundWindow();
+    DWORD pid = 0;
+    LONG n = g_probeN, us = g_probeUs;
+    int ours, caption, inactive;
+    g_fsSec.secs = secs;
+    g_fsSec.sleeps = n - g_probeNPrev;
+    g_fsSec.sleepMs = ((DWORD)us - (DWORD)g_probeUsPrev) / 1000.0;
+    g_fsSec.sleepMax = InterlockedExchange(&g_probeMaxUs, 0) / 1000.0;
+    g_probeNPrev = n;
+    g_probeUsPrev = us;
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    ours = pid == GetCurrentProcessId();
+    if (ours && !g_gameWnd) g_gameWnd = fg;
+    caption = (*(DWORD *)GAME_WINSTAT & 1) != 0; // WS_ACTIVECAPTION
+    inactive = *(DWORD *)GAME_ACTIVE == 0;
+    g_fsSec.fg = ours ? secs : 0;
+    g_fsSec.caption = caption ? secs : 0;
+    g_fsSec.inactive = inactive ? secs : 0;
+    HookDevice();
+    if (fps < 30.0) {
+        if (!g_slow) {
+            g_slow = 1;
+            memset(&g_fsSlow, 0, sizeof g_fsSlow);
+        }
+        StatsAdd(&g_fsSlow, &g_fsSec);
+    } else if (g_slow) {
+        g_slow = 0;
+        if (g_fsSlow.secs >= 3.0) {
+            char s[640];
+            StatsText(s, sizeof s, &g_fsSlow);
+            Log("frames: %.1f s at %s", g_fsSlow.secs, s);
+        }
+    }
+    if (fps >= 10.0 && fps < 30.0 && ours && caption && !inactive && g_fsSec.worst * 1000.0 / g_qpf.QuadPart < 250.0) {
+        if (++g_lagSecs == 4) {
+            char s[640];
+            StatsText(s, sizeof s, &g_fsSec);
+            Log("frame log: lag signature (4 s in a row at 10-30 FPS in the foreground); last second: %s", s);
+            LogWindowState();
+            StartSampler();
+        }
+    } else {
+        g_lagSecs = 0;
+    }
+    if (g_backOpen) {
+        StatsAdd(&g_fsBack, &g_fsSec);
+        if (g_fsBack.secs >= 10.0) FocusBackLog("first");
+    }
+    memset(&g_fsSec, 0, sizeof g_fsSec);
+    g_fSecStart = now;
+}
 
 static void *__cdecl FrameHook(void)
 {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    if (!g_frameTid) g_frameTid = GetCurrentThreadId();
+    if (*(DWORD *)GAME_ACTIVE == 0) {
+        if (!g_away) {
+            g_away = 1;
+            g_awayStart = now.QuadPart;
+            if (g_backOpen) FocusBackLog("left again after");
+        }
+    } else if (g_away) {
+        g_away = 0;
+        g_backOpen = 1;
+        g_backAway = (double)(now.QuadPart - g_awayStart) / g_qpf.QuadPart;
+        memset(&g_fsBack, 0, sizeof g_fsBack);
+    }
     if (g_fLast) {
         LONGLONG dt = now.QuadPart - g_fLast;
-        if (dt > g_fMax) g_fMax = dt;
-        g_fFrames++;
-        if (now.QuadPart - g_fSecStart >= g_qpf.QuadPart) {
-            double secs = (double)(now.QuadPart - g_fSecStart) / g_qpf.QuadPart, fps = g_fFrames / secs;
-            if (fps < 30.0) {
-                HWND fg = GetForegroundWindow();
-                DWORD pid = 0;
-                if (!g_slow) {
-                    g_slow = 1;
-                    g_slowStart = g_fSecStart;
-                    g_slowSecs = g_slowFrames = g_slowFg = g_slowCaption = g_slowInactive = 0;
-                    g_slowWorst = 0;
-                }
-                if (fg) GetWindowThreadProcessId(fg, &pid);
-                g_slowSecs += secs;
-                g_slowFrames += g_fFrames;
-                if (pid == GetCurrentProcessId()) g_slowFg += secs;
-                if (*(DWORD *)GAME_WINSTAT & 1) g_slowCaption += secs; // WS_ACTIVECAPTION
-                if (*(DWORD *)GAME_ACTIVE == 0) g_slowInactive += secs;
-                if (g_fMax > g_slowWorst) g_slowWorst = g_fMax;
-            } else if (g_slow) {
-                g_slow = 0;
-                if (g_slowSecs >= 3.0)
-                    Log("frames: %.1f s at %.1f FPS (worst frame %.0f ms); game in foreground %.0f%%, active caption %.0f%%, "
-                        "treated as inactive %.0f%%", g_slowSecs, g_slowFrames / g_slowSecs, g_slowWorst * 1000.0 / g_qpf.QuadPart,
-                        100 * g_slowFg / g_slowSecs, 100 * g_slowCaption / g_slowSecs, 100 * g_slowInactive / g_slowSecs);
-            }
-            g_fFrames = 0;
-            g_fMax = 0;
-            g_fSecStart = now.QuadPart;
-        }
+        double ms = dt * 1000.0 / g_qpf.QuadPart;
+        if (dt > g_fsSec.worst) g_fsSec.worst = dt;
+        g_fsSec.frames++;
+        g_fsSec.hist[ms < 10 ? 0 : ms < 20 ? 1 : ms < 30 ? 2 : ms < 50 ? 3 : ms < 100 ? 4 : 5]++;
+        if (now.QuadPart - g_fSecStart >= g_qpf.QuadPart) FrameSecond(now.QuadPart);
     } else {
         g_fSecStart = now.QuadPart;
     }
@@ -1417,9 +1732,15 @@ static void *__cdecl FrameHook(void)
 static const char *ApplyFrameLog(void)
 {
     BYTE call[5] = { 0xE8 };
+    HANDLE t;
     *(DWORD *)(call + 1) = FRAME_TARGET - (FRAME_SITE + 5);
     if (!BytesMatch(FRAME_SITE, call, 5)) return "skipped (bytes differ)";
     QueryPerformanceFrequency(&g_qpf);
+    t = CreateThread(NULL, 0, SleepProbeThread, NULL, 0, NULL);
+    if (t) {
+        SetThreadPriority(t, THREAD_PRIORITY_ABOVE_NORMAL); // measure the timer, not CPU contention
+        CloseHandle(t);
+    }
     *(DWORD *)(call + 1) = (DWORD)FrameHook - (FRAME_SITE + 5);
     return WriteCode(FRAME_SITE, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
