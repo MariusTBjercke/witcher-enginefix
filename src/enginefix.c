@@ -1908,10 +1908,30 @@ static int __fastcall BorderlessFullscreen(void *obj)
     return g_blOn ? 1 : RealFullscreen(obj);
 }
 
-// Replaces "mov esi,0x02CA0000" (5 bytes) with "call BlStyleStub" (5 bytes); flags are not touched.
+static int BorderlessWanted(const char **from);
+static void BorderlessSet(int on);
+
+// FUN_005932f0 is about to style the window for windowed mode: take the option as stored right now (the Lua
+// part stores it just before "Full screen" is applied), so a switch to windowed never needs a restyle.
+static void __cdecl BlStyleNow(void)
+{
+    const char *from;
+    int on = BorderlessWanted(&from);
+    if (on != g_blOn) {
+        BorderlessSet(on);
+        Log("qol 3: borderless window %s (%s), at the switch to windowed", on ? "on" : "off", from);
+    }
+}
+
+// Replaces "mov esi,0x02CA0000" (5 bytes) with "call BlStyleStub" (5 bytes). Only ESI changes, as before.
 static __declspec(naked) void BlStyleStub(void)
 {
     __asm {
+        pushfd
+        pushad
+        call BlStyleNow
+        popad
+        popfd
         mov esi, dword ptr [g_blStyle]
         ret
     }
@@ -1950,13 +1970,13 @@ static void BorderlessRestyle(int on)
 {
     HWND w = *(HWND *)GAME_HWND;
     RECT c, r;
-    DWORD style = on ? BL_POPUP : BL_FRAMED;
-    if (!w || !GetClientRect(w, &c)) return;
+    DWORD style = (on ? BL_POPUP : BL_FRAMED) | WS_VISIBLE; // never hide it (the game's own styles lack WS_VISIBLE)
+    if (!w || IsIconic(w) || !GetClientRect(w, &c) || c.right <= 0 || c.bottom <= 0) return;
     r = c;
     AdjustWindowRect(&r, style, FALSE);
-    SetWindowLongA(w, GWL_STYLE, (LONG)(style | (GetWindowLongA(w, GWL_STYLE) & WS_VISIBLE)));
+    SetWindowLongA(w, GWL_STYLE, (LONG)style);
     SetWindowPos(w, HWND_TOP, 0, 0, r.right - r.left, r.bottom - r.top,
-                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS);
     if (!on) ClipCursor(NULL);
 }
 

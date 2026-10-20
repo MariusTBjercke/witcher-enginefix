@@ -201,19 +201,10 @@ end
 
 if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting then
     local ok, err = pcall(function()
-        local pFullScreen -- the game's "Full screen" setting, found on first use
-
+        -- The game's "Full screen" setting, looked up the way CGammaSetting:IsEnabled does.
         local function FullScreenSetting()
-            if pFullScreen then return pFullScreen end
             local pManager = CHardwareDependantSettingsManager and CHardwareDependantSettingsManager:Instance()
-            if not pManager then return nil end
-            for i = 0, pManager:GetNumSettings() - 1 do
-                local pSetting = pManager:GetSetting(i)
-                if pSetting and pSetting.GetClassName and pSetting:GetClassName() == "FullScreen" then
-                    pFullScreen = pSetting
-                    return pSetting
-                end
-            end
+            return pManager and pManager:GetSetting("CFullScreenSetting")
         end
 
         CEngineFixBorderlessSetting = makeClass(CCheckBoxSetting)
@@ -234,16 +225,27 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         end
         -- Greyed out while "Full screen" is ticked (the panel asks again after every checkbox click).
         CEngineFixBorderlessSetting.IsEnabled = function(self)
-            local pFS = FullScreenSetting()
-            return not (pFS and pFS:GetValue() > 0)
+            local okFS, pFS = pcall(FullScreenSetting)
+            return not (okFS and pFS and pFS:GetValue() == 1)
         end
         CEngineFixBorderlessSetting.ApplyChanges = function(self)
             self:ApplyChangesInternal()
         end
-        -- No restart: dinput8.dll picks the stored value up within a second.
         local pSetting = CEngineFixBorderlessSetting:new()
         RegisterLuaSetting(pSetting)
         pSetting:Read() -- the game read its settings before this script ran
+
+        -- dinput8.dll reads the stored option when the game styles the window for windowed mode. When OK applies
+        -- "Full screen" off and "Borderless window" on together, "Full screen" comes first, so store ours before it.
+        if CFullScreenSetting and CFullScreenSetting.ApplyChanges and WriteSettingIniEntry then
+            local origApply = CFullScreenSetting.ApplyChanges
+            CFullScreenSetting.ApplyChanges = function(self)
+                pcall(WriteSettingIniEntry, "EngineFixBorderless", tostring(pSetting:GetValue()))
+                return origApply(self)
+            end
+        else
+            Log("options: Borderless window: Full screen setting not found; a switch to windowed may show a border briefly")
+        end
     end)
     if not ok then Log("options: Borderless window not added: " .. tostring(err)) end
 end
