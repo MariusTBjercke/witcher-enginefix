@@ -82,7 +82,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.6.1"
+#define ENGINEFIX_VERSION "0.6.2"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
