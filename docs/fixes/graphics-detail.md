@@ -27,6 +27,8 @@ The registry (`HKCU\Software\CD Projekt RED\Witcher\Settings`) stores only the m
 
 Left out on purpose:
 
+- `m_fSceneLODDistancesMultiplier` (scenery), after 0.6.0. It was × 2 / × 3 in 0.5.0-0.6.0, and players saw parts of distant hills go missing at high and ultra (Outskirts, near the Eternal Fire shrine; reported on Nexus 2026-10-21 with Off/High/Ultra screenshots from the same spot: the sky shows through where Off has a hillside). The area model `gl09` (`meshes00.bif`) is built from 181 `LoD_dummy` groups. Each 64 m terrain tile is one group: the detailed ground (`pre_ter_*__02`, texture-paint node, LOD 0-2) and a coarse `PlaneNN` mesh (LOD 3-5, hills up to 12 m high), plus objects. `FUN_00594d10` picks one LOD index per group: index = round((count − 1) × blend), where blend is the formula above using the distance to the group's bounding sphere. `FUN_00549250` then draws a node only if its `+0x98`/`+0x9c` range (min/max LOD, read straight from the file) contains that index. With longer distances, tiles that the game always shows as the coarse plane from a given spot switch to their detailed ground. That ground did not render in those places. Why is not verified. Most likely it is the sector culling in `FUN_005c0890`: a node whose sector index (`+0x130`) is not in the visible-sector bit set is skipped, so the area's visibility data never expected the detailed ground there. Scenery LOD is therefore left at the game's distances; creatures and trees still get the longer ones.
+
 - `m_nMaxSceneLOD` / `m_nMaxCharacterLOD` (5): an upper bound on a model's LOD index when its LoD dummies are set up (`FUN_0059e6f0`), with `m_bCreateMissingLODs` = 1. Higher LOD's 150 most likely does nothing; it is not a distance.
 - `m_fCharacterVisibility`: set per location from a 2DA and the "character visibility" slider (`AutoSetCharacterVisibility`, `FUN_0040b420`) on every area load. Characters are the most expensive objects on the single-threaded main loop.
 - `m_fGrassDensityModifier` (more grass per square metre): set by the grass slider (1.0 at most); not checked yet.
@@ -38,7 +40,7 @@ Left out on purpose:
 
 | | high (1) | ultra (2) |
 |---|---|---|
-| LOD distances (scenery, creatures, trees) | × 2 (10-90 m) | × 3 (15-135 m) |
+| LOD distances (creatures, trees) | × 2 (10-90 m) | × 3 (15-135 m) |
 | shadow distance | × 2 (60 m) | × 3 (90 m) |
 | grass range and fade (of the slider's value) | × 1.5 (90 m) | × 2 (120 m) |
 | shadow-casting lights | 6 | 8 |

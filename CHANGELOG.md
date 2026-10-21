@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
+- Graphics detail: high and ultra no longer stretch the LOD distances for scenery. Parts of distant hills could go missing (the sky showed through), for example in the Outskirts. Creatures and trees still get the longer LOD distances, and grass, shadows, lights, decals and reflections are unchanged. Reported by forfunandmore.
+- QoL 5, skip the intro (off by default): `[qol] skip_intro=1` in the ini goes straight to the main menu at startup, without the logos and the intro cinematic. Suggested by forfunandmore.
 - French: the pause menu's "Exit to main menu" now reads "RETOUR AU MENU PRINCIPAL" instead of the game's "QUITTER", so it no longer looks like the "QUITTER LE JEU" button under it, and the "Borderless window" tooltip reads more naturally. Both from Illuzio.
 - Diagnostics: `[debug] engine_log` copies the engine's own messages (such as why a conversation was interrupted) into the log, with changes of the in-conversation state.
 

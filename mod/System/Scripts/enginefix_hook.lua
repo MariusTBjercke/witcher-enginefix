@@ -25,6 +25,13 @@
 --    storage. A key bound with bindkey never reaches the game, so with Space it also does Space's normal pause
 --    everywhere else. When Witcher Quick Loot is installed as well, it handles the key and this one stays unbound.
 --
+-- 6. Skip the intro (QoL 5, off unless [qol] skip_intro=1). Once the startup scripts (this one included) have run,
+--    the engine calls the Lua function PlayIntro (Movies.lua: publisher, developer and engine logos, the intro cinematic, the title),
+--    which queues them with playCutscene; the end of that sequence opens the main menu. playCutscene is wrapped so
+--    that the intro only gets the first "CS_BLOCKEND" marker, the same as the usual manual edit of Movies.lua to
+--    { "CS_BLOCKEND" }. (The engine's own "don't play intro" flag, SetDontPlayIntro, left a black screen: nothing
+--    opened the menu.)
+--
 -- Run at startup by the shared loader testtools.lua.
 
 local ENABLED = true           -- false turns the load/save list and journal fix off
@@ -366,6 +373,27 @@ if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting t
         end
     end)
     if not ok then Log("options: Borderless window not added: " .. tostring(err)) end
+end
+
+if (tonumber(ReadIniSection("qol").skip_intro) or 0) ~= 0 then
+    if type(playCutscene) == "function" then
+        local origPlayCutscene = playCutscene
+        local tIntro = { cs_publisher = true, cs_developer = true, cs_engine = true, cs_intro = true, cs_title = true }
+        local bActive, bBlockEnd = true, false
+        playCutscene = function(sName, ...)
+            if bActive then
+                if sName == "cs_title" then bActive = false end -- the last one PlayIntro plays
+                if tIntro[sName] then return end
+                if sName == "CS_BLOCKEND" then
+                    if bBlockEnd then return end
+                    bBlockEnd = true
+                end
+            end
+            return origPlayCutscene(sName, unpack(arg))
+        end
+    else
+        Log("skip intro: playCutscene not found, the intro plays")
+    end
 end
 
 if ModHooks_BindScripts then

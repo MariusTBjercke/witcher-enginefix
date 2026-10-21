@@ -43,10 +43,13 @@ Optional, off by default:
 - Borderless window: Options > Graphics > "Borderless window". With full
   screen off and the desktop resolution, the game fills the screen without a
   border and alt-tab is instant.
+- Skip the intro: [qol] skip_intro=1 in the ini goes straight to the main menu
+  at startup, without the logos and the intro cinematic.
 - Longer draw distances: [graphics] detail=1 (high) or 2 (ultra) in the ini
-  keeps full-detail models, trees, grass, shadows and lights out to 1.5-3x the
-  game's distances, on top of the options menu. Costs some frame rate on older
-  PCs. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen.
+  keeps full-detail creatures and trees, grass, shadows and lights out to
+  1.5-3x the game's distances, on top of the options menu (scenery keeps the
+  game's own level of detail). Costs some frame rate on older PCs. Ctrl+F12 in
+  game cycles off/high/ultra and shows the level on screen.
 
 
 The mod's own texts ("Exit game", "Borderless window", the Ctrl+F12 message)
@@ -78,7 +81,8 @@ Files installed:
 CONFIGURATION
 -------------
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
-The [qol] section holds the quality-of-life changes (on by default). [graphics]
+The [qol] section holds the quality-of-life changes (on by default, except
+borderless and skip_intro). [graphics]
 detail=1 or 2 turns on the longer draw distances (0 = off). The [debug]
 section holds diagnostics for development; leave them off.
 In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu

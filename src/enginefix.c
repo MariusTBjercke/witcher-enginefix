@@ -82,7 +82,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.6.0"
+#define ENGINEFIX_VERSION "0.6.1"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -2264,7 +2264,7 @@ static const char *ApplyBorderless(int on)
 // each member is registered as a console variable by name, "push var; push name" at the addresses below).
 // The options menu (hwdepsettings.luc) only sets some of them, and none of the LOD distances. [graphics]
 // detail=1 (high) or 2 (ultra) multiplies a fixed set by a factor per level: LOD distances (5-45 m by
-// default) for scenery, creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
+// default) for creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
 // shadow distance (30 m) and shadow-casting lights (4), how far lights stay on (7 x their radius), and the
 // decal and weapon effect distances, and the water reflection texture (512 px; scenes create it when they
 // load, CAurScene has RecreateReflectionRTs for later changes). The factor applies to whatever the game set: a thread checks the
@@ -2284,8 +2284,10 @@ typedef struct {
     DWORD base, written;
 } DetailVar;
 
+// Not m_fSceneLODDistancesMultiplier (0x00C5058C): area models swap whole terrain tiles between a coarse
+// far mesh (LOD 3-5) and the detailed ground (LOD 0-2), and with longer distances parts of distant hills
+// went missing (docs/fixes/graphics-detail.md).
 static DetailVar g_detailVars[] = {
-    { "m_fSceneLODDistancesMultiplier",    0x00C5058C, 0x00B5DF50, 0x00B20C32, 0, { 1, 2, 3 } },
     { "m_fCreatureLODDistancesMultiplier", 0x00C50588, 0x00B5DF1C, 0x00B20C02, 0, { 1, 2, 3 } },
     { "m_fSpeedTreeLODDistancesMultiplier", 0x00C50590, 0x00B5DF84, 0x00B20C62, 0, { 1, 2, 3 } },
     { "m_fGrassVisibilityRange",           0x00C50544, 0x00B5CD38, 0x00B1F972, 0, { 1, 1.5f, 2 } },
@@ -2759,6 +2761,10 @@ static void CheckLuaLoader(void)
         Log("qol 4 (quick loot hotkey): %s, bound by Scripts\\enginefix_hook.lua (Take all in the loot window%s)",
             key[0] ? key : "SPACE", !key[0] || _stricmp(key, "SPACE") == 0 ? ", pause elsewhere" : "");
     }
+
+    // QoL 5 is done by enginefix_hook.lua (it filters the intro's playCutscene calls).
+    Log("qol 5 (skip the intro movies at startup): %s", !IniFlag("qol", "skip_intro", 0) ? "off (ini)"
+        : listed ? "on, by Scripts\\enginefix_hook.lua" : "inactive with the Lua part");
 }
 
 // ---- dinput8 proxy ----------------------------------------------------------

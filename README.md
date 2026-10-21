@@ -21,7 +21,8 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 | **Quick loot** | Quality of life: Space in the loot window presses "Take all". In shops and storage it does nothing; everywhere else it still pauses, as before. The same as the [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot) mod, which can stay installed alongside (it then takes over). | on |
 | **Camera in active pause (over-the-shoulder)** | Quality of life: in the over-the-shoulder camera, active pause (Space) shows the cursor and only edge scrolling moved the camera. Hold the middle mouse button to turn it with the mouse, as in the other cameras. | on |
 | **Borderless window** | Quality of life, off by default: Options > Graphics > "Borderless window". With full screen off and the desktop resolution, the game fills the screen without a border and alt-tab is instant, while the cursor, edge camera turn and pause-in-the-background behave as in full screen. | off |
-| **Longer draw distances** | Optional, off by default: `[graphics] detail=1` (high) or `2` (ultra) keeps full-detail models, trees, grass, shadows and lights out to 1.5-3× the game's distances, on top of your options menu. No debug mode or console commands needed. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen, so you can compare. On a modern PC it cost under 0.5 ms per frame (72 FPS held at 4K). | off |
+| **Skip the intro** | Quality of life, off by default: `[qol] skip_intro=1` goes straight to the main menu at startup, without the logos and the intro cinematic. Uses the game's own "don't play intro" switch. | off |
+| **Longer draw distances** | Optional, off by default: `[graphics] detail=1` (high) or `2` (ultra) keeps full-detail creatures and trees, grass, shadows and lights out to 1.5-3× the game's distances (scenery keeps the game's own level-of-detail distances), on top of your options menu. No debug mode or console commands needed. Ctrl+F12 in game cycles off/high/ultra and shows the level on screen, so you can compare. On a modern PC it cost under 0.5 ms per frame (72 FPS held at 4K). | off |
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
 
@@ -72,6 +73,7 @@ ots_pause_mmb_camera=1   ; over-the-shoulder camera: hold the middle mouse butto
 borderless=0             ; borderless window; normally set in Options > Graphics, this line counts until the menu has saved it
 quick_loot=1             ; quick loot: the key below presses "Take all" in the loot window
 quick_loot_key=SPACE     ; one engine key name; with SPACE it still pauses outside the loot window
+skip_intro=0             ; 1 = skip the logos and the intro cinematic at startup
 
 [graphics]
 detail=0   ; longer LOD, grass, shadow and light distances: 0 = the game's own, 1 = high, 2 = ultra
