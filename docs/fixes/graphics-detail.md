@@ -27,12 +27,32 @@ The registry (`HKCU\Software\CD Projekt RED\Witcher\Settings`) stores only the m
 
 Left out on purpose:
 
-- `m_fSceneLODDistancesMultiplier` (scenery), after 0.6.0. It was × 2 / × 3 in 0.5.0-0.6.0, and players saw parts of distant hills go missing at high and ultra (Outskirts, near the Eternal Fire shrine; reported on Nexus 2026-10-21 with Off/High/Ultra screenshots from the same spot: the sky shows through where Off has a hillside). The area model `gl09` (`meshes00.bif`) is built from 181 `LoD_dummy` groups. Each 64 m terrain tile is one group: the detailed ground (`pre_ter_*__02`, texture-paint node, LOD 0-2) and a coarse `PlaneNN` mesh (LOD 3-5, hills up to 12 m high), plus objects. `FUN_00594d10` picks one LOD index per group: index = round((count − 1) × blend), where blend is the formula above using the distance to the group's bounding sphere. `FUN_00549250` then draws a node only if its `+0x98`/`+0x9c` range (min/max LOD, read straight from the file) contains that index. With longer distances, tiles that the game always shows as the coarse plane from a given spot switch to their detailed ground. That ground did not render in those places. Why is not verified. Most likely it is the sector culling in `FUN_005c0890`: a node whose sector index (`+0x130`) is not in the visible-sector bit set is skipped, so the area's visibility data never expected the detailed ground there. Scenery LOD is therefore left at the game's distances; creatures and trees still get the longer ones.
-
 - `m_nMaxSceneLOD` / `m_nMaxCharacterLOD` (5): an upper bound on a model's LOD index when its LoD dummies are set up (`FUN_0059e6f0`), with `m_bCreateMissingLODs` = 1. Higher LOD's 150 most likely does nothing; it is not a distance.
 - `m_fCharacterVisibility`: set per location from a 2DA and the "character visibility" slider (`AutoSetCharacterVisibility`, `FUN_0040b420`) on every area load. Characters are the most expensive objects on the single-threaded main loop.
 - `m_fGrassDensityModifier` (more grass per square metre): set by the grass slider (1.0 at most); not checked yet.
 - `m_fMapRevealRange`, `m_nDebugMode`: not graphics.
+
+## Scenery LOD and the sector test
+
+Only six models in the game have `LoD_dummy` groups, the area models `gl09` (Outskirts), `gl17`, `gl08`/`l08_mod`, `gl39` and `gl12` (a scan of every type-2070 resource). Everywhere else `m_fSceneLODDistancesMultiplier` changes nothing. In `gl09` there are 181 groups, one per 64 m terrain tile:
+
+- the detailed ground: `pre_ter_*__02`, texture-paint node (type `0x8001`) with tiled `trn_*` layers, LOD 0-2;
+- the coarse ground: a `PlaneNN` mesh with a baked texture (`L09-LODtrn`), LOD 3-5;
+- buildings' coarse stand-ins: `PlaneNN` meshes with `l09-lodbud`, LOD 3-5;
+- objects: fences, stones and about 2,800 trees and bushes (`l09_drzewo`, `l09_krzak`, SpeedTree references, type `0x10001`), LOD 0-2, so they disappear beyond the group's LOD 2 distance.
+
+`FUN_00594d10` picks one LOD index per group: index = round((count − 1) × blend), where blend is the formula above, using the distance to the group's bounding sphere. `FUN_00549250` then draws a node only if its `+0x98`/`+0x9c` range (min/max LOD, read straight from the file) contains that index.
+
+**Holes (0.5.0-0.6.0).** With the multiplier at × 2 / × 3, parts of distant hills went missing at high and ultra, and the sky showed through (Outskirts, near the Eternal Fire shrine; reported on Nexus 2026-10-21 with Off/High/Ultra screenshots). 0.6.1 left the multiplier alone. A debug build then cycled scene LOD × 3 with the node loop's two culling tests turned off one at a time:
+
+- the sector test at `0x005C093D` in `FUN_005c0890`: a node whose sector (`+0x130`) is not in the visible-sector bits (`[info+0x58]`) is skipped;
+- the occluder test `FUN_005bda20` at `0x005C0AAE`.
+
+In game (2026-10-22, standing still at a hill in Outskirts): holes with both tests on and with only the occluder test off; no holes with the sector test off. The areas' sector data never expected the detailed nodes that far away.
+
+**Change (after 0.6.1).** The multiplier is scaled again (× 2 / × 3), and the sector test's `jz` goes to a stub. When the level is above 0 and the node belongs to a LOD group (`+0xCC` != −1), the stub continues at `0x005C0943` as if the sector were visible; otherwise it skips the node as before (`0x005C0CCE`). Every other node, and every node at level 0, keeps the game's sector test, as do the frustum and occluder tests that follow. The pass goes on before the multiplier grows and off after it shrinks. The multiplier is only scaled when the stub is in place (original bytes checked). Harness: with level 2 a node in a LOD group passes and a node without one is skipped; after Ctrl+F12 to level 0 both are skipped and the multiplier is 1 again. In game, 2026-10-22, Outskirts (owner): no holes at high or ultra; distant ground and buildings keep full detail. 72 FPS held at both levels; the main thread's own work per frame at the same spots was 6.3-7.8 ms off and 6.5-9.1 ms ultra. Some trees and bushes by the Vizima wall still pop in at about the same distance as before, so they are probably not governed by these groups (open lead in [research.md](../research.md)).
+
+The terrain's colour can still change at the switch: the detailed ground uses the tiled layers, the far plane a baked image that does not always match (a slope painted with the grey-brown `trn_skarpa_*` shows green from afar). That is the game's art, the same at every level; longer distances only move the switch farther away.
 
 ## Change
 
@@ -40,7 +60,7 @@ Left out on purpose:
 
 | | high (1) | ultra (2) |
 |---|---|---|
-| LOD distances (creatures, trees) | × 2 (10-90 m) | × 3 (15-135 m) |
+| LOD distances (scenery, creatures, trees) | × 2 (10-90 m) | × 3 (15-135 m) |
 | shadow distance | × 2 (60 m) | × 3 (90 m) |
 | grass range and fade (of the slider's value) | × 1.5 (90 m) | × 2 (120 m) |
 | shadow-casting lights | 6 | 8 |

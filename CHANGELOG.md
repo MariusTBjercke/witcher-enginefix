@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Graphics detail: high and ultra stretch the level of detail for scenery again, now without holes. In the areas that have it (the Outskirts and a few others), buildings, fences, trees and bushes placed in the area, and the ground keep their full detail out to 2-3x the distance. The holes came from the game's visibility data per area section, which skipped detailed ground farther away than the game ever drew it; at high and ultra that check is skipped for these level-of-detail models only.
+
 ## 0.6.1
 
 - Graphics detail: high and ultra no longer stretch the LOD distances for scenery. Parts of distant hills could go missing (the sky showed through), for example in the Outskirts. Creatures and trees still get the longer LOD distances, and grass, shadows, lights, decals and reflections are unchanged. Reported by forfunandmore.

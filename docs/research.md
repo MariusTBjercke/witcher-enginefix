@@ -104,3 +104,7 @@ Seen once (2026-10-20 22:19, Lakeside → Murky Waters village, chapter 4, loadi
 - At the 60 FPS cap the main thread is busy 40-50% of the time in Vizima and the swamp; the game is not CPU-bound in normal play.
 - The engine is effectively single-threaded (main thread: logic, AI, all D3D calls). DXVK already moves submission to its own thread.
 - `.bfx` files in `System\Scripts` are precompiled effects; `FUN_00525ae0` only compiles `.fx` when a newer source exists (flags `DAT_00c50148`/`DAT_00c50150`, both 0 in retail).
+
+## Trees that still pop in near the Vizima wall (Outskirts)
+
+With scenery LOD at x3 and the sector pass for LOD-group nodes (after 0.6.1), the ground and buildings in Outskirts keep full detail far away, but a few bushes on the mound in front of the Vizima wall (by the stone bridge) still appear only when Geralt comes close, at about the same distance as at "off" (owner, 2026-10-22, screenshots). The other callers of the LOD index (`FUN_00712650`, `FUN_00712a10`, `0x005C0F40`, `0x005C1676`, `0x005C192D`) have no sector test near the call. So these bushes are probably not area-model nodes in a LoD group (those are `l09_krzak`/`l09_drzewo`, type `0x10001`, LOD 0-2); they may be placeables or SpeedTrees with their own visibility distance (`FUN_006fc050` only rescales the trees' LOD distances by `m_fSpeedTreeLODDistancesMultiplier`). To find out: the bushes' position, then which model they come from. Low priority: the owner found no other place with this pop-in.

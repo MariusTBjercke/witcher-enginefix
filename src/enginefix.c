@@ -2264,7 +2264,7 @@ static const char *ApplyBorderless(int on)
 // each member is registered as a console variable by name, "push var; push name" at the addresses below).
 // The options menu (hwdepsettings.luc) only sets some of them, and none of the LOD distances. [graphics]
 // detail=1 (high) or 2 (ultra) multiplies a fixed set by a factor per level: LOD distances (5-45 m by
-// default) for creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
+// default) for scenery, creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
 // shadow distance (30 m) and shadow-casting lights (4), how far lights stay on (7 x their radius), and the
 // decal and weapon effect distances, and the water reflection texture (512 px; scenes create it when they
 // load, CAurScene has RecreateReflectionRTs for later changes). The factor applies to whatever the game set: a thread checks the
@@ -2284,10 +2284,20 @@ typedef struct {
     DWORD base, written;
 } DetailVar;
 
-// Not m_fSceneLODDistancesMultiplier (0x00C5058C): area models swap whole terrain tiles between a coarse
-// far mesh (LOD 3-5) and the detailed ground (LOD 0-2), and with longer distances parts of distant hills
-// went missing (docs/fixes/graphics-detail.md).
+// m_fSceneLODDistancesMultiplier only matters for the six area models with LoD_dummy groups (Outskirts and a
+// few others): terrain tiles, buildings, fences, and trees and bushes placed in the area. Each group shows its
+// detailed nodes (LOD 0-2) near and coarse planes (LOD 3-5) far. The node loop FUN_005c0890 skips a node whose
+// sector is not in the visible-sector bits, and the areas' sector data never expected detailed nodes that far
+// away, so with a longer distance parts of hills went missing (0.6.0). While the level is above 0, a stub at that
+// test lets nodes that belong to a LOD group (+0xCC != -1) through; all other nodes keep the sector test. The
+// multiplier is only scaled when the stub is in place (docs/fixes/graphics-detail.md).
+#define SCENE_SECTOR_JZ   0x005C093D // jz 0x005C0CCE: node's sector not visible
+#define SCENE_SECTOR_PASS 0x005C0943 // where a node in a visible sector continues
+#define SCENE_SECTOR_SKIP 0x005C0CCE // next node
+static const BYTE kSceneSectorJz[6] = { 0x0F, 0x84, 0x8B, 0x03, 0x00, 0x00 };
+static volatile LONG g_sceneSectorPass; // 1 while the detail level is above 0
 static DetailVar g_detailVars[] = {
+    { "m_fSceneLODDistancesMultiplier",    0x00C5058C, 0x00B5DF50, 0x00B20C32, 0, { 1, 2, 3 } }, // keep first
     { "m_fCreatureLODDistancesMultiplier", 0x00C50588, 0x00B5DF1C, 0x00B20C02, 0, { 1, 2, 3 } },
     { "m_fSpeedTreeLODDistancesMultiplier", 0x00C50590, 0x00B5DF84, 0x00B20C62, 0, { 1, 2, 3 } },
     { "m_fGrassVisibilityRange",           0x00C50544, 0x00B5CD38, 0x00B1F972, 0, { 1, 1.5f, 2 } },
@@ -2368,10 +2378,12 @@ static DWORD DetailScaled(const DetailVar *v, int level)
 }
 
 // One line per round in which the game set some of the values: "<name> <game's value> -> <ours>, ...".
+// The sector pass for LOD-group nodes goes on before the scenery LOD distance grows and off after it shrinks.
 static void DetailApply(int level)
 {
     char s[1024];
     size_t i, n = 0;
+    if (level) g_sceneSectorPass = 1;
     for (i = 0; i < DETAIL_COUNT; i++) {
         DetailVar *v = &g_detailVars[i];
         DWORD cur, want;
@@ -2393,6 +2405,7 @@ static void DetailApply(int level)
         if (want != cur) *(volatile DWORD *)v->var = want;
         v->written = want;
     }
+    if (!level) g_sceneSectorPass = 0;
     if (n && g_detailBaseLogs < 40) {
         g_detailBaseLogs++;
         Log("graphics detail %d: the game set %s", level, s);
@@ -2462,6 +2475,26 @@ static void DetailFrameStats(const FrameStats *s)
     StatsAdd(&g_fsDetail, s);
 }
 
+// The stub the sector test's jz goes to (only reached for a node in a sector that is not visible):
+//   cmp dword [g_sceneSectorPass],0 / je skip / cmp dword [esi+0xCC],-1 / je skip / jmp PASS / skip: jmp SKIP
+static BOOL ApplySceneSectorPass(void)
+{
+    BYTE *stub, *p, jz[6] = { 0x0F, 0x84 };
+    if (!BytesMatch(SCENE_SECTOR_JZ, kSceneSectorJz, sizeof kSceneSectorJz)) return FALSE;
+    stub = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!stub) return FALSE;
+    p = stub;
+    *p++ = 0x83; *p++ = 0x3D; *(DWORD *)p = (DWORD)&g_sceneSectorPass; p += 4; *p++ = 0x00; // cmp [pass],0
+    *p++ = 0x74; *p++ = 0x0E;                                                          // je skip
+    *p++ = 0x83; *p++ = 0xBE; *(DWORD *)p = 0xCC; p += 4; *p++ = 0xFF;                 // cmp dword [esi+0xCC],-1
+    *p++ = 0x74; *p++ = 0x05;                                                          // je skip
+    *p++ = 0xE9; PutRel32(p, SCENE_SECTOR_PASS); p += 4;                               // jmp PASS
+    *p++ = 0xE9; PutRel32(p, SCENE_SECTOR_SKIP); p += 4;                               // skip: jmp SKIP
+    FlushInstructionCache(GetCurrentProcess(), stub, p - stub);
+    *(DWORD *)(jz + 2) = (DWORD)stub - (SCENE_SECTOR_JZ + 6);
+    return WriteCode(SCENE_SECTOR_JZ, jz, sizeof jz);
+}
+
 static const char *ApplyDetail(int level, int hotkey)
 {
     static char result[96];
@@ -2475,8 +2508,11 @@ static const char *ApplyDetail(int level, int hotkey)
         sprintf_s(name, sizeof name, "g_cAuroraSettings.%s", v->name);
         *(DWORD *)(push + 1) = v->var;
         v->ok = BytesMatch(v->nameStr, (const BYTE *)name, strlen(name) + 1) && BytesMatch(v->push, push, 5);
+        if (v->ok && i == 0 && !ApplySceneSectorPass()) {
+            v->ok = 0; // without the sector pass a longer scenery LOD distance leaves holes
+            Log("graphics detail: %s skipped (sector test bytes differ)", v->name);
+        } else if (!v->ok) Log("graphics detail: %s skipped (bytes differ)", v->name);
         if (v->ok) ok++;
-        else Log("graphics detail: %s skipped (bytes differ)", v->name);
     }
     if (!ok) return "skipped (bytes differ)";
     g_detailLevel = level;
