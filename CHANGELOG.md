@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
-- Fix 12: with the over-the-shoulder camera, pressing Shift in the main menu (also as part of Win+Shift+S) hid the cursor; it only showed while Shift was held. Shift now does nothing to the cursor in the main menu, as in the other cameras.
+- Fix 12: with the over-the-shoulder camera, pressing Shift in the main menu (also as part of Win+Shift+S) hid the cursor; it only showed while Shift was held. Shift now does nothing to the cursor in the main menu, as in the other cameras. The same happened when the game got the focus back after the Snipping Tool; fixed the same way.
+- QoL 7, Continue (on by default): with at least one save, the main menu gets a "Continue" button at the top that loads the newest save (by its time; quicksaves and autosaves count). The buttons under it move one slot down; without saves the menu is unchanged. `[qol] continue_button=0` turns it off. In all ten languages.
+- QoL 6 (on by default): Windows key combinations and Print Screen work in game. The game blocked the Windows key, so Win+Shift+S, Print Screen to the Snipping Tool, Win+D and the like did nothing while it was in front. A Windows key pressed on its own still does not open the Start menu. `[qol] windows_key=0` blocks it again.
 - Diagnostics: `[debug] mouse_log` logs when the mouse starts and stops turning the camera and when the game takes the mouse exclusively, with the calling code.
 
 ## 0.6.3

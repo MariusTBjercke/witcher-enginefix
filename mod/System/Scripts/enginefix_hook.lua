@@ -32,6 +32,12 @@
 --    { "CS_BLOCKEND" }. (The engine's own "don't play intro" flag, SetDontPlayIntro, left a black screen: nothing
 --    opened the menu.)
 --
+-- 7. "Continue" in the main menu (QoL 7, [qol] continue_button, on). With at least one save, a "Continue" button
+--    takes New Game's place at the top (the buttons under it move one slot down, Exit stays) and loads the newest
+--    save by its time stamp. The saves come from the engine's own list (GetLoadSaveSystem():Lua_GetSavedGameList,
+--    which calls CGuiMan:AddSaveGame per save), parsed by the load list's own AddSaveGame, and are loaded the way
+--    the load list does it (LoadSavedGame(ID, SaveName, SaveFileName)).
+--
 -- Run at startup by the shared loader testtools.lua.
 
 local ENABLED = true           -- false turns the load/save list and journal fix off
@@ -56,52 +62,62 @@ end
 local TEXTS = {
     [3]  = { -- English
         exit = "EXIT GAME",
+        continue = "CONTINUE",
         borderless = "Borderless window",
         borderlessTip = "With full screen off, the game fills the screen without a border.",
     },
     [5]  = { -- Polish ("OPUŚĆ GRĘ" is the game's own text for both exit buttons)
         exit = "WYJDŹ DO PULPITU",
+        continue = "KONTYNUUJ",
         borderless = "Okno bez ramki",
         borderlessTip = "Gdy pełny ekran jest wyłączony, gra wypełnia ekran bez ramki.",
     },
     [10] = { -- German ("SPIEL VERLASSEN" is the game's own text for both)
         exit = "ZUM DESKTOP",
+        continue = "FORTSETZEN",
         borderless = "Rahmenloses Fenster",
         borderlessTip = "Ohne Vollbild füllt das Spiel den Bildschirm ohne Rahmen aus.",
     },
     [11] = { -- French ("QUITTER" is the game's own text for both, so "Exit to main menu" gets mainMenu; all from Illuzio on Nexus)
         exit = "QUITTER LE JEU",
+        continue = "CONTINUER",
         mainMenu = "RETOUR AU MENU PRINCIPAL",
         borderless = "Fenêtre sans bordure",
         borderlessTip = "Lorsque le mode plein écran est désactivé, le jeu occupe tout l'écran sans bordure.",
     },
     [12] = { -- Spanish ("SALIR DEL JUEGO" is the game's own text for "Exit to main menu")
         exit = "SALIR AL ESCRITORIO",
+        continue = "CONTINUAR",
         borderless = "Ventana sin bordes",
         borderlessTip = "Sin pantalla completa, el juego ocupa toda la pantalla sin bordes.",
     },
     [13] = { -- Italian
         exit = "ESCI DAL GIOCO",
+        continue = "CONTINUA",
         borderless = "Finestra senza bordi",
         borderlessTip = "Senza la modalità a tutto schermo, il gioco riempie lo schermo senza bordi.",
     },
     [14] = { -- Russian
         exit = "ВЫХОД ИЗ ИГРЫ",
+        continue = "ПРОДОЛЖИТЬ",
         borderless = "Окно без рамки",
         borderlessTip = "Без полноэкранного режима игра занимает весь экран без рамки.",
     },
     [15] = { -- Czech
         exit = "UKONČIT HRU",
+        continue = "POKRAČOVAT",
         borderless = "Okno bez okraje",
         borderlessTip = "Bez celé obrazovky hra vyplní obrazovku bez okraje.",
     },
     [16] = { -- Hungarian ("KILÉPÉS A JÁTÉKBÓL" is the game's own text for "Exit to main menu")
         exit = "KILÉPÉS A WINDOWSBA",
+        continue = "FOLYTATÁS",
         borderless = "Keret nélküli ablak",
         borderlessTip = "Teljes képernyő nélkül a játék keret nélkül tölti ki a képernyőt.",
     },
     [21] = { -- Traditional Chinese
         exit = "離開遊戲",
+        continue = "繼續遊戲",
         borderless = "無邊界視窗",
         borderlessTip = "關閉全螢幕時，遊戲會以無邊界視窗佔滿整個螢幕。",
     },
@@ -132,6 +148,14 @@ local function ReadIniSection(sSection)
     end
     file:close()
     return tValues
+end
+
+-- A deep copy of a GUI definition table.
+local function Copy(t)
+    if type(t) ~= "table" then return t end
+    local c = {}
+    for k, v in pairs(t) do c[k] = Copy(v) end
+    return c
 end
 
 if ENABLED and CListControl and CListControl.Refresh then
@@ -227,13 +251,6 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
     local QUIT = "EngineFixExitGameButton"
     local STEP = -66 -- the buttons above are 62-66 units apart
 
-    local function Copy(t)
-        if type(t) ~= "table" then return t end
-        local c = {}
-        for k, v in pairs(t) do c[k] = Copy(v) end
-        return c
-    end
-
     -- Same button as "Exit to main menu" (gui_defs_sys_v2.luc sysDefineLabel), one step lower. The
     -- definitions are (re)built by g_SkinLoader:Load (gui_defs_*_v2), which runs after this script.
     local function AddButtonDef()
@@ -304,6 +321,101 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
     end
 elseif PAUSE_EXIT_BUTTON then
     Log("pause menu: Exit game button not added (CSkinLoader, CGuiNewSystemPanel or createOKCancelPanel missing)")
+end
+
+local tQolSettings = ReadIniSection("qol")
+if (tonumber(tQolSettings.continue_button) or 1) ~= 0 and CSkinLoader and CSkinLoader.Load and CMainMenuPanel
+    and CMainMenuPanel.new and CGuiMan and CGuiNewSystemLoadPanel and CGuiNewSystemLoadPanel.AddSaveGame and GetLoadSaveSystem then
+    local CONT = "EngineFixContinueButton"
+    local tBelow = { "NewGame", "LoadGame", "Options", "Credits" } -- each moves one slot down for it
+    local tControls, tOrigY, tContDef
+
+    -- The newest save by its time stamp, as { ID, SaveName, SaveFileName } the way the load list makes them, or nil.
+    -- The engine's save list (GetLoadSaveSystem():Lua_GetSavedGameList) calls CGuiMan:AddSaveGame once per save;
+    -- for a moment that goes to the load list's own AddSaveGame on a stand-in for the list.
+    local function NewestSave()
+        local tList = { lm_pList = { AddListItem = function() end }, lm_tIcons = { Save = { Textures = {} } },
+                        lm_tSaveGames = {}, lm_nSaveGameCount = 0, lm_nHighestSaveGame = 0 }
+        local tBest, nBestTime
+        local origAdd = CGuiMan.AddSaveGame
+        CGuiMan.AddSaveGame = function(self, pSave)
+            local nCount = tList.lm_nSaveGameCount
+            local ok = pcall(CGuiNewSystemLoadPanel.AddSaveGame, tList, pSave)
+            local tSave = ok and tList.lm_nSaveGameCount > nCount and tList.lm_tSaveGames[tList.lm_nSaveGameCount]
+            if tSave and tSave.ID and tSave.ID > 0 then
+                local nTime = ((((pSave.m_fYear * 100 + pSave.m_fMonth) * 100 + pSave.m_fDay) * 100 + pSave.m_fHour) * 100
+                    + pSave.m_fMinute) * 100 + pSave.m_fSecond
+                if not nBestTime or nTime > nBestTime or (nTime == nBestTime and tSave.ID > tBest.ID) then
+                    tBest, nBestTime = tSave, nTime
+                end
+            end
+        end
+        local ok, err = pcall(function() GetLoadSaveSystem():Lua_GetSavedGameList() end)
+        CGuiMan.AddSaveGame = origAdd
+        if not ok then Log("main menu: Continue: save list failed: " .. tostring(err)) end
+        return tBest
+    end
+
+    local function SetY(tDef, nY)
+        local nDelta = nY - tDef.Position.Y
+        tDef.Position.Y = nY
+        if tDef.HotSpot and tDef.HotSpot.Position then tDef.HotSpot.Position.Y = tDef.HotSpot.Position.Y + nDelta end
+    end
+
+    -- With a save, "Continue" takes New Game's place and the buttons under it move one slot down (Credits by the
+    -- step above it); Exit stays. Without one, the menu is the game's own. The definitions are rebuilt by every
+    -- skin load (gui_defs_mm_v2.luc), and CMainMenuPanel:new builds the menu from them.
+    local function LayOut(bContinue)
+        local tDefs = g_aGuiDefinitions and g_aGuiDefinitions["MainMenuPanel"]
+        local tC = tDefs and tDefs.Controls
+        if not (tC and tC["NewGame"] and tC["Credits"]) then return end
+        if tC ~= tControls then -- fresh definitions
+            tControls, tOrigY = tC, {}
+            for _, sName in ipairs(tBelow) do tOrigY[sName] = tC[sName].Position.Y end
+            tContDef = Copy(tC["NewGame"])
+            -- A literal label instead of a StrRef (defineGUIPanel passes String.String to InitTextLayer as is).
+            tContDef.String.StrRef = nil
+            tContDef.String.String = Text("continue")
+        end
+        if bContinue then
+            tC[CONT] = tContDef
+            SetY(tContDef, tOrigY["NewGame"])
+            for i = 1, table.getn(tBelow) - 1 do SetY(tC[tBelow[i]], tOrigY[tBelow[i + 1]]) end
+            SetY(tC["Credits"], 2 * tOrigY["Credits"] - tOrigY["Options"])
+        else
+            tC[CONT] = nil
+            for _, sName in ipairs(tBelow) do SetY(tC[sName], tOrigY[sName]) end
+        end
+    end
+
+    local function Continue()
+        local tSave = NewestSave()
+        if not tSave then Log("main menu: Continue: no save found"); return end
+        Log("main menu: Continue: loading " .. tostring(tSave.ID) .. " - " .. tostring(tSave.SaveName))
+        GetLoadSaveSystem():LoadSavedGame(tSave.ID, tSave.SaveName, tSave.SaveFileName)
+        if g_pGuiMan and g_pGuiMan.lm_pInGameNewSystemPanel then g_pGuiMan.lm_pInGameNewSystemPanel:ToggleOff() end
+    end
+
+    local origNew = CMainMenuPanel.new
+    CMainMenuPanel.new = function(...)
+        local nStart = os.clock()
+        local okSave, tSave = pcall(NewestSave)
+        local okLayOut, err = pcall(LayOut, okSave and tSave ~= nil)
+        if not okLayOut then Log("main menu: Continue button not laid out: " .. tostring(err)) end
+        local self = origNew(unpack(arg))
+        if okSave and tSave and okLayOut then
+            local okButton, errButton = pcall(function()
+                self.lm_pPanel.m_Controls[CONT].OnClick = function()
+                    local ok, errClick = pcall(Continue)
+                    if not ok then Log("main menu: Continue failed: " .. tostring(errClick)) end
+                end
+            end)
+            if not okButton then Log("main menu: Continue button not added: " .. tostring(errButton)) end
+        end
+        Log(string.format("main menu: Continue button %s (newest save %s, %.0f ms)", okSave and tSave and "shown" or "hidden",
+            okSave and tSave and tostring(tSave.ID) .. " - " .. tostring(tSave.SaveName) or "none", (os.clock() - nStart) * 1000))
+        return self
+    end
 end
 
 if BORDERLESS_OPTION and makeClass and CCheckBoxSetting and RegisterLuaSetting then

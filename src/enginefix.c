@@ -56,8 +56,8 @@
 //   after coming back it reacted up to 1 s late; the sleep now ends as soon as the window is in front again.
 //
 // Fix 12: with the over-the-shoulder camera chosen, Shift in the main menu worked as in a level: releasing it hid
-//   the cursor and let the mouse turn a camera that is not there (the cursor stayed gone until Shift was held).
-//   The Shift handler now leaves the cursor alone while the main menu is open.
+//   the cursor and let the mouse turn a camera that is not there (the cursor stayed gone until Shift was held), and so
+//   did coming back to the game after some focus losses (the Snipping Tool). Both now leave the main menu's cursor alone.
 //
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
@@ -73,6 +73,13 @@
 //   pause elsewhere. All in Scripts\enginefix_hook.lua (bindkey + Data\Override\EngineFix\ef_lootall.ncs); the DLL only
 //   logs its state. Steps aside when the Witcher Quick Loot mod is installed.
 //
+// QoL 6 ([qol] windows_key): the game blocked the Windows key (DISCL_NOWINKEY), so Win+Shift+S, Print Screen to the
+//   Snipping Tool and other Windows key combinations did nothing in game. They work now; a Windows key pressed on
+//   its own still does not open the Start menu (a thread presses an unassigned key as soon as it goes down).
+//
+// QoL 7 ([qol] continue_button): "Continue" at the top of the main menu loads the newest save. All in
+//   Scripts\enginefix_hook.lua; the DLL only logs its state.
+//
 // QoL changes ([qol]) can be turned off the same way. Diagnostics ([debug]) are off unless the ini turns them on.
 
 #include <windows.h>
@@ -86,7 +93,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.6.3"
+#define ENGINEFIX_VERSION "0.7.0"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -2017,23 +2024,30 @@ static const char *ApplyInactiveSleepFix(void)
 }
 
 // ---- Fix 12: Shift hides the cursor in the main menu ---------------------------------------------
-// The input handler FUN_00423bd0 (ESI = the client object) handles Shift in the over-the-shoulder camera
-// ([0x00C500F0] = 2): down (0x004245E1) frees the cursor (FUN_0043ee00(0) on [ESI+0x48], ShowCursor 1), up
-// (0x00424650) turns mouse look back on (FUN_0043ee00(1), ShowCursor 0); FUN_00419b50 then parks the hidden
-// cursor every frame. Neither path checks for the main menu, where [ESI+0x48] exists too, so a Shift tap there
-// (also the one in Win+Shift+S) hid the cursor until Shift was held again. Each path loads [ESI+0x48] and skips
-// everything when it is NULL (mov ecx,[esi+0x48]; test ecx,ecx; jz); a call to a stub now does that load and
-// test and gives NULL while the main menu is open ([ESI+0x609], read by CClientExoApp::GetMainMenuPanelActive).
+// In the over-the-shoulder camera ([0x00C500F0] = 2) the mouse turns the camera unless Shift is held, and three
+// places switch that on or off with FUN_0043ee00 on the camera object ([client+0x48]) plus ShowCursor. None of
+// them checks for the main menu, where the camera object exists too, so the cursor vanished there (FUN_00419b50
+// then parks the hidden cursor every frame) and only showed while Shift was held:
+// - the input handler FUN_00423bd0 (ESI = client) on Shift down (0x004245E1: FUN_0043ee00(0), ShowCursor 1) and
+//   Shift up (0x00424650: FUN_0043ee00(1), ShowCursor 0), also the Shift in Win+Shift+S;
+// - FUN_0074dcf0, run when the game gets the focus back after some focus losses (seen after the Snipping Tool's
+//   overlay): FUN_0043ee00(1), ShowCursor 0.
+// Each loads the camera object and skips everything when it is NULL. The Shift paths load it with
+// mov ecx,[esi+0x48]; test ecx,ecx (a call to a stub that does the same now), FUN_0074dcf0 with call FUN_00402980
+// (ECX = the app; [[app+0x10]+0x48]), now a call to a stub that does the same. Both stubs give NULL while the main
+// menu is open ([client+0x609], read by CClientExoApp::GetMainMenuPanelActive).
 
 #define SHIFT_DOWN_LOAD 0x00424612 // mov ecx,[esi+0x48]; test ecx,ecx (5 bytes), then jz 0x0042462E
 #define SHIFT_UP_LOAD   0x0042467D // the same, then jz 0x0042469A
+#define REFOCUS_LOAD    0x0074DDF7 // call FUN_00402980 (5 bytes), then test eax,eax; jz 0x0074DE20
+#define CAMERA_GETTER   0x00402980 // thiscall (app): [[app+0x10]+0x48]
 #define CLIENT_MAINMENU 0x609      // byte: 1 while the main menu is open
 
 static const BYTE kShiftLoadOrig[] = { 0x8B, 0x4E, 0x48, 0x85, 0xC9 };
 
 static const char *ApplyMainMenuShiftFix(void)
 {
-    static const BYTE stub[] = {
+    static const BYTE shiftStub[] = {
         0x8B, 0x4E, 0x48,                                     // mov ecx,[esi+0x48]
         0x80, 0xBE, CLIENT_MAINMENU & 0xFF, CLIENT_MAINMENU >> 8, 0x00, 0x00, 0x00, // cmp byte ptr [esi+0x609],0
         0x74, 0x02,                                           // jz +2
@@ -2041,18 +2055,31 @@ static const char *ApplyMainMenuShiftFix(void)
         0x85, 0xC9,                                           // test ecx,ecx (the jz after the call reads it)
         0xC3                                                  // ret
     };
+    static const BYTE refocusStub[] = {
+        0x8B, 0x41, 0x10,                                     // mov eax,[ecx+0x10] (the client)
+        0x80, 0xB8, CLIENT_MAINMENU & 0xFF, CLIENT_MAINMENU >> 8, 0x00, 0x00, 0x00, // cmp byte ptr [eax+0x609],0
+        0x74, 0x03,                                           // jz +3
+        0x33, 0xC0,                                           // xor eax,eax (main menu: no camera)
+        0xC3,                                                 // ret
+        0x8B, 0x40, 0x48,                                     // mov eax,[eax+0x48]
+        0xC3                                                  // ret
+    };
     BYTE *code, call[5] = { 0xE8 };
+    *(DWORD *)(call + 1) = CAMERA_GETTER - (REFOCUS_LOAD + 5);
     if (!BytesMatch(SHIFT_DOWN_LOAD, kShiftLoadOrig, sizeof kShiftLoadOrig) ||
-        !BytesMatch(SHIFT_UP_LOAD, kShiftLoadOrig, sizeof kShiftLoadOrig))
+        !BytesMatch(SHIFT_UP_LOAD, kShiftLoadOrig, sizeof kShiftLoadOrig) || !BytesMatch(REFOCUS_LOAD, call, 5))
         return "skipped (bytes differ)";
-    code = VirtualAlloc(NULL, sizeof stub, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    code = VirtualAlloc(NULL, sizeof shiftStub + sizeof refocusStub, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!code) return "FAILED (no memory)";
-    memcpy(code, stub, sizeof stub);
-    FlushInstructionCache(GetCurrentProcess(), code, sizeof stub);
+    memcpy(code, shiftStub, sizeof shiftStub);
+    memcpy(code + sizeof shiftStub, refocusStub, sizeof refocusStub);
+    FlushInstructionCache(GetCurrentProcess(), code, sizeof shiftStub + sizeof refocusStub);
     *(DWORD *)(call + 1) = (DWORD)code - (SHIFT_DOWN_LOAD + 5);
     if (!WriteCode(SHIFT_DOWN_LOAD, call, 5)) return "FAILED (VirtualProtect)";
     *(DWORD *)(call + 1) = (DWORD)code - (SHIFT_UP_LOAD + 5);
-    return WriteCode(SHIFT_UP_LOAD, call, 5) ? "applied" : "FAILED (VirtualProtect)";
+    if (!WriteCode(SHIFT_UP_LOAD, call, 5)) return "FAILED (VirtualProtect)";
+    *(DWORD *)(call + 1) = (DWORD)(code + sizeof shiftStub) - (REFOCUS_LOAD + 5);
+    return WriteCode(REFOCUS_LOAD, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
 // ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
@@ -2300,6 +2327,58 @@ static const char *ApplyBorderless(int on)
     t = CreateThread(NULL, 0, BorderlessThread, NULL, 0, NULL);
     if (t) CloseHandle(t);
     return on ? "applied, on (in windowed mode)" : "applied, off (the options menu turns it on)";
+}
+
+// ---- QoL 6: Windows key combinations in game -----------------------------------------------------
+// The game's DirectInput keyboard (FUN_004cc720) uses DISCL_NONEXCLUSIVE | DISCL_FOREGROUND | DISCL_NOWINKEY (0x16),
+// so while the game is in front every Windows key combination is dead, and so is Print Screen when Windows opens
+// the Snipping Tool with it (Win+Shift+S and Print Screen both did nothing; a test window with 0x06 opened it).
+// We push 0x06 instead. Without the block, a Windows key pressed and released on its own would open the Start
+// menu, so a thread watches the key while the game is in front: as soon as it goes down, an unassigned key (0xE8,
+// as AutoHotkey does) is pressed and released, and the shell takes the release as the end of a combination.
+// A low-level keyboard hook cannot do this: while the game's DirectInput keyboard is acquired, a hook in the
+// game's process does not see the keys (tested). Combinations (Win+Shift+S, Win+D, ...) work as usual.
+
+#define WINKEY_PUSH  0x004CC7C4 // push 0x16 (2 bytes) before SetCooperativeLevel on the keyboard
+#define WINKEY_MASK  0xE8       // unassigned virtual key
+#define WINKEY_POLL  5          // ms; a tap of the key lasts far longer
+
+static int g_winKeyLogged;
+
+static DWORD WINAPI WinKeyThread(LPVOID unused)
+{
+    int wasDown = 0;
+    (void)unused;
+    for (;;) {
+        int down = (GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) < 0;
+        if (down && !wasDown) {
+            HWND fg = GetForegroundWindow();
+            DWORD pid = 0;
+            if (fg) GetWindowThreadProcessId(fg, &pid);
+            if (pid == GetCurrentProcessId()) {
+                INPUT in[2];
+                ZeroMemory(in, sizeof in);
+                in[0].type = in[1].type = INPUT_KEYBOARD;
+                in[0].ki.wVk = in[1].ki.wVk = WINKEY_MASK;
+                in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+                SendInput(2, in, sizeof(INPUT));
+                if (!g_winKeyLogged) { g_winKeyLogged = 1; Log("qol 6: Windows key pressed in game, masked (no Start menu on its own)"); }
+            }
+        }
+        wasDown = down;
+        Sleep(down ? 20 : WINKEY_POLL);
+    }
+}
+
+static const char *ApplyWinKeys(void)
+{
+    static const BYTE orig[2] = { 0x6A, 0x16 }, ours[2] = { 0x6A, 0x06 };
+    HANDLE t;
+    if (!BytesMatch(WINKEY_PUSH, orig, 2)) return "skipped (bytes differ)";
+    t = CreateThread(NULL, 0, WinKeyThread, NULL, 0, NULL);
+    if (!t) return "FAILED (no thread, the Windows key stays blocked)";
+    CloseHandle(t);
+    return WriteCode(WINKEY_PUSH, ours, 2) ? "applied" : "FAILED (VirtualProtect)";
 }
 
 // ---- Graphics detail ([graphics] detail) --------------------------------------
@@ -2871,7 +2950,7 @@ static void TryPatch(void)
     Log("fix 9 (texture wait polls every 250 ms): %s", FixEnabled("fix9") ? ApplyTexWaitFix() : "disabled in ini");
     Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
     Log("fix 11 (up to 1 s late after coming back to the game): %s", FixEnabled("fix11") ? ApplyInactiveSleepFix() : "disabled in ini");
-    Log("fix 12 (Shift hides the cursor in the main menu): %s", FixEnabled("fix12") ? ApplyMainMenuShiftFix() : "disabled in ini");
+    Log("fix 12 (Shift or a return to the game hides the cursor in the main menu): %s", FixEnabled("fix12") ? ApplyMainMenuShiftFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     {
@@ -2880,6 +2959,8 @@ static void TryPatch(void)
         Log("qol 3 (borderless window instead of a framed one in windowed mode): %s (set in the %s)",
             ApplyBorderless(on), from);
     }
+    Log("qol 6 (Windows key combinations and Print Screen in game, a lone Windows key still masked): %s",
+        IniFlag("qol", "windows_key", 1) ? ApplyWinKeys() : "disabled in ini");
     {
         int level = IniInt("graphics", "detail", 0);
         int hotkey = IniFlag("graphics", "hotkey", 1) || IniFlag("debug", "detail_hotkey", 0); // the old [debug] name still counts
@@ -2956,6 +3037,10 @@ static void CheckLuaLoader(void)
 
     // QoL 5 is done by enginefix_hook.lua (it filters the intro's playCutscene calls).
     Log("qol 5 (skip the intro movies at startup): %s", !IniFlag("qol", "skip_intro", 0) ? "off (ini)"
+        : listed ? "on, by Scripts\\enginefix_hook.lua" : "inactive with the Lua part");
+
+    // QoL 7 is done by enginefix_hook.lua (a button in the main menu).
+    Log("qol 7 (Continue in the main menu): %s", !IniFlag("qol", "continue_button", 1) ? "off (ini)"
         : listed ? "on, by Scripts\\enginefix_hook.lua" : "inactive with the Lua part");
 }
 

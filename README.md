@@ -16,12 +16,14 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 | **Hair depends on frame rate** | Hair damping was applied once per frame, so hair moved differently above 60 FPS. It now behaves as at 60 FPS at any frame rate. | on |
 | **Locked door in "The Source"** | Chapter III: Dandelion leads you to Alvin's kidnappers, but their door stays locked. The door is now unlocked when the game failed to, also in saves that are already stuck there. | on |
 | **Cursor jumps to the top-left** | After the mouse has turned the camera (active pause or Shift in the over-the-shoulder camera), the cursor came back in the top-left area at resolutions above 1366x768. It now comes back in the middle of the screen. | on |
-| **Cursor disappears in the main menu** | With the over-the-shoulder camera, a Shift press in the main menu (also the one in Win+Shift+S) hid the cursor, which only came back while Shift was held. Shift now leaves the cursor alone there. | on |
+| **Cursor disappears in the main menu** | With the over-the-shoulder camera, a Shift press in the main menu (also the one in Win+Shift+S), or coming back to the game after the Snipping Tool, hid the cursor, which only came back while Shift was held. The main menu now keeps its cursor. | on |
 | **Slow return after alt-tab** | After alt-tabbing back, the game could take up to a second to react (it finished a one-second background sleep first). It now reacts at once, and still pauses while in the background. | on |
 | **Exit game from the pause menu** | Quality of life: the pause menu (Esc) gets an "Exit game" button under "Exit to main menu", with the same "Are you sure?" question, so you no longer have to go through the main menu to quit. | on |
 | **Quick loot** | Quality of life: Space in the loot window presses "Take all". In shops and storage it does nothing; everywhere else it still pauses, as before. The same as the [Witcher Quick Loot](https://github.com/MariusTBjercke/witcher-quick-loot) mod, which can stay installed alongside (it then takes over). | on |
 | **Camera in active pause (over-the-shoulder)** | Quality of life: in the over-the-shoulder camera, active pause (Space) shows the cursor and only edge scrolling moved the camera. Hold the middle mouse button to turn it with the mouse, as in the other cameras. | on |
 | **Borderless window** | Quality of life, off by default: Options > Graphics > "Borderless window". With full screen off and the desktop resolution, the game fills the screen without a border and alt-tab is instant, while the cursor, edge camera turn and pause-in-the-background behave as in full screen. | off |
+| **Windows key and Print Screen in game** | Quality of life: the game blocked the Windows key, so Win+Shift+S, Print Screen to the Snipping Tool and other Windows key combinations did nothing while it was in front. They work now; a Windows key pressed on its own still does not open the Start menu. | on |
+| **Continue** | Quality of life: with at least one save, the main menu gets a "Continue" button at the top that loads your newest save (by its time, quicksaves and autosaves included). Without saves the menu is unchanged. | on |
 | **Skip the intro** | Quality of life, off by default: `[qol] skip_intro=1` goes straight to the main menu at startup, without the logos and the intro cinematic. Uses the game's own "don't play intro" switch. | off |
 | **Longer draw distances** | Optional, off by default: `[graphics] detail=1` (high) or `2` (ultra) keeps full-detail scenery, creatures and trees, grass, shadows and lights out to 1.5-3× the game's distances, on top of your options menu; `3` (extreme) goes much farther (shadows 180 m, scenery 10×) for fast PCs. No debug mode or console commands needed. Ctrl+F12 in game cycles off/high/ultra/extreme and shows the level on screen, so you can compare. On a modern PC it cost under 0.5 ms per frame (72 FPS held at 4K). | off |
 
@@ -76,6 +78,8 @@ borderless=0             ; borderless window; normally set in Options > Graphics
 quick_loot=1             ; quick loot: the key below presses "Take all" in the loot window
 quick_loot_key=SPACE     ; one engine key name; with SPACE it still pauses outside the loot window
 skip_intro=0             ; 1 = skip the logos and the intro cinematic at startup
+continue_button=1        ; "Continue" at the top of the main menu loads the newest save
+windows_key=1            ; Windows key combinations and Print Screen work in game (a lone Windows key still does nothing)
 
 [graphics]
 detail=0   ; longer LOD, grass, shadow and light distances: 0 = the game's own, 1 = high, 2 = ultra, 3 = extreme
