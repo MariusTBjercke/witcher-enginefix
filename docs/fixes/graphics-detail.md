@@ -58,14 +58,18 @@ The terrain's colour can still change at the switch: the detailed ground uses th
 
 `ApplyDetail` checks, per setting, that the name string and the registration's `push <variable>` are the original bytes (otherwise that setting is skipped and logged). A thread then looks at the values every 50 ms. A value that differs from what it last wrote was set by the game (constructor, `startup.luc`, the grass slider), so it becomes the base. The thread writes base × factor; values ≤ 0 are left as they are (grass is −1 until the menu applies). Level 0 starts no thread and writes nothing.
 
-| | high (1) | ultra (2) |
-|---|---|---|
-| LOD distances (scenery, creatures, trees) | × 2 (10-90 m) | × 3 (15-135 m) |
-| shadow distance | × 2 (60 m) | × 3 (90 m) |
-| grass range and fade (of the slider's value) | × 1.5 (90 m) | × 2 (120 m) |
-| shadow-casting lights | 6 | 8 |
-| light fade distance, decals, weapon effects | × 1.5 | × 2 |
-| water reflection texture (`m_nReflectionRTSize` `0xC5051C`, 512 px) | 1024 | 2048 |
+| | high (1) | ultra (2) | extreme (3) |
+|---|---|---|---|
+| LOD distances, scenery | × 2 (10-90 m) | × 3 (15-135 m) | × 10 (50-450 m) |
+| LOD distances, creatures and trees | × 2 | × 3 | × 4 (20-180 m) |
+| shadow distance | × 2 (60 m) | × 3 (90 m) | × 6 (180 m) |
+| grass range and fade (of the slider's value) | × 1.5 (90 m) | × 2 (120 m) | × 3 (180 m) |
+| shadow-casting lights | 6 | 8 | 10 |
+| light fade distance | × 1.5 | × 2 | × 10 |
+| decals, weapon effects | × 1.5 | × 2 | × 2.5, × 3 |
+| water reflection texture (`m_nReflectionRTSize` `0xC5051C`, 512 px) | 1024 | 2048 | 2048 |
+
+Extreme (added after 0.6.2) is for fast PCs. It comes close to the ranges of the Higher LOD mod (scene × 20, shadows 200 m, lights × 28, grass 300 m), but is scaled from what the game set and keeps the sector pass, so it has no holes. Grass density is left alone: no engine code reads `m_fGrassDensityModifier` (`0xC5054C`, offset `0x464`); only the constructor, the Lua accessor and the grass slider touch it. Harness: level 3 gives the values in the table and the sector pass; Ctrl+F12 goes 3 → 0 and restores everything. In game (2026-10-22, Outskirts, 4K, capped at 72 FPS): 72 FPS held at extreme, 7.1 ms of the main thread's own work per frame on average; owner: no holes, clearly more detail far away.
 
 The log has one line each time the game sets some of the values, e.g. `graphics detail 2: the game set fGrassVisibilityRange 60 -> 120, fGrassFadeRange 48 -> 96`.
 

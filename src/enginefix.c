@@ -82,7 +82,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.6.2"
+#define ENGINEFIX_VERSION "0.6.3"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -2263,7 +2263,8 @@ static const char *ApplyBorderless(int on)
 // The engine's draw distances live in g_cAuroraSettings (constructor FUN_00401190, object at 0x00C500E8;
 // each member is registered as a console variable by name, "push var; push name" at the addresses below).
 // The options menu (hwdepsettings.luc) only sets some of them, and none of the LOD distances. [graphics]
-// detail=1 (high) or 2 (ultra) multiplies a fixed set by a factor per level: LOD distances (5-45 m by
+// detail=1 (high), 2 (ultra) or 3 (extreme, about the ranges of the Higher LOD mod on Nexus, for fast PCs)
+// multiplies a fixed set by a factor per level: LOD distances (5-45 m by
 // default) for scenery, creatures and trees, grass range (set by the menu's grass slider, 60 m at most),
 // shadow distance (30 m) and shadow-casting lights (4), how far lights stay on (7 x their radius), and the
 // decal and weapon effect distances, and the water reflection texture (512 px; scenes create it when they
@@ -2279,7 +2280,7 @@ typedef struct {
     const char *name; // g_cAuroraSettings member
     DWORD var, nameStr, push; // the variable, "g_cAuroraSettings.<name>", the registration's "push var"
     int isInt;
-    float scale[3];   // per level
+    float scale[4];   // per level
     int ok, have;     // verified; base known
     DWORD base, written;
 } DetailVar;
@@ -2297,34 +2298,34 @@ typedef struct {
 static const BYTE kSceneSectorJz[6] = { 0x0F, 0x84, 0x8B, 0x03, 0x00, 0x00 };
 static volatile LONG g_sceneSectorPass; // 1 while the detail level is above 0
 static DetailVar g_detailVars[] = {
-    { "m_fSceneLODDistancesMultiplier",    0x00C5058C, 0x00B5DF50, 0x00B20C32, 0, { 1, 2, 3 } }, // keep first
-    { "m_fCreatureLODDistancesMultiplier", 0x00C50588, 0x00B5DF1C, 0x00B20C02, 0, { 1, 2, 3 } },
-    { "m_fSpeedTreeLODDistancesMultiplier", 0x00C50590, 0x00B5DF84, 0x00B20C62, 0, { 1, 2, 3 } },
-    { "m_fGrassVisibilityRange",           0x00C50544, 0x00B5CD38, 0x00B1F972, 0, { 1, 1.5f, 2 } },
-    { "m_fGrassFadeRange",                 0x00C50548, 0x00B5CD64, 0x00B1F9A2, 0, { 1, 1.5f, 2 } },
-    { "m_fMaxShadowDistance",              0x00C50598, 0x00B5DAB0, 0x00B20752, 0, { 1, 2, 3 } },
-    { "m_nMaxShadowLights",                0x00C506C4, 0x00B5BBBC, 0x00B1E652, 1, { 1, 1.5f, 2 } },
-    { "m_fLightsFadeDistanceFactor",       0x00C505E8, 0x00B5FCE4, 0x00B22C72, 0, { 1, 1.5f, 2 } },
-    { "m_fMaxDecalsDist",                  0x00C508E8, 0x00B5EB6C, 0x00B219E2, 0, { 1, 1.5f, 2 } },
-    { "m_fMaxWeaponVisualsDist",           0x00C508E4, 0x00B5EB40, 0x00B219B2, 0, { 1, 1.5f, 2 } },
-    { "m_nReflectionRTSize",               0x00C5051C, 0x00B5BE68, 0x00B1E952, 1, { 1, 2, 4 } }, // water reflections, 512 px
+    { "m_fSceneLODDistancesMultiplier",    0x00C5058C, 0x00B5DF50, 0x00B20C32, 0, { 1, 2, 3, 10 } }, // keep first
+    { "m_fCreatureLODDistancesMultiplier", 0x00C50588, 0x00B5DF1C, 0x00B20C02, 0, { 1, 2, 3, 4 } },
+    { "m_fSpeedTreeLODDistancesMultiplier", 0x00C50590, 0x00B5DF84, 0x00B20C62, 0, { 1, 2, 3, 4 } },
+    { "m_fGrassVisibilityRange",           0x00C50544, 0x00B5CD38, 0x00B1F972, 0, { 1, 1.5f, 2, 3 } },
+    { "m_fGrassFadeRange",                 0x00C50548, 0x00B5CD64, 0x00B1F9A2, 0, { 1, 1.5f, 2, 3 } },
+    { "m_fMaxShadowDistance",              0x00C50598, 0x00B5DAB0, 0x00B20752, 0, { 1, 2, 3, 6 } },
+    { "m_nMaxShadowLights",                0x00C506C4, 0x00B5BBBC, 0x00B1E652, 1, { 1, 1.5f, 2, 2.5f } },
+    { "m_fLightsFadeDistanceFactor",       0x00C505E8, 0x00B5FCE4, 0x00B22C72, 0, { 1, 1.5f, 2, 10 } },
+    { "m_fMaxDecalsDist",                  0x00C508E8, 0x00B5EB6C, 0x00B219E2, 0, { 1, 1.5f, 2, 2.5f } },
+    { "m_fMaxWeaponVisualsDist",           0x00C508E4, 0x00B5EB40, 0x00B219B2, 0, { 1, 1.5f, 2, 3 } },
+    { "m_nReflectionRTSize",               0x00C5051C, 0x00B5BE68, 0x00B1E952, 1, { 1, 2, 4, 4 } }, // water reflections, 512 px
 };
 #define DETAIL_COUNT (sizeof g_detailVars / sizeof g_detailVars[0])
 
-static const char *const kDetailNames[3] = { "off", "high", "ultra" };
+static const char *const kDetailNames[4] = { "off", "high", "ultra", "extreme" };
 // The on-screen message in the game's text language (registry Settings\TextLanguage, ids from Data\languages.2da);
 // English for any other.
-static const struct { int lang; const WCHAR *title; const WCHAR *level[3]; } kDetailTexts[] = {
-    {  3, L"Graphics detail:", { L"Off", L"High", L"Ultra" } }, // English
-    {  5, L"Detale grafiki:", { L"wy\u0142\u0105czone", L"wysokie", L"ultra" } }, // Polish
-    { 10, L"Grafikdetails:", { L"Aus", L"Hoch", L"Ultra" } }, // German
-    { 11, L"D\u00e9tails graphiques :", { L"d\u00e9sactiv\u00e9s", L"\u00e9lev\u00e9s", L"ultra" } }, // French
-    { 12, L"Detalle gr\u00e1fico:", { L"desactivado", L"alto", L"ultra" } }, // Spanish
-    { 13, L"Dettaglio grafico:", { L"disattivato", L"alto", L"ultra" } }, // Italian
-    { 14, L"\u0414\u0435\u0442\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u0433\u0440\u0430\u0444\u0438\u043a\u0438:", { L"\u0432\u044b\u043a\u043b.", L"\u0432\u044b\u0441\u043e\u043a\u0430\u044f", L"\u0443\u043b\u044c\u0442\u0440\u0430" } }, // Russian
-    { 15, L"Detaily grafiky:", { L"vypnuto", L"vysok\u00e9", L"ultra" } }, // Czech
-    { 16, L"Grafikai r\u00e9szletess\u00e9g:", { L"ki", L"magas", L"ultra" } }, // Hungarian
-    { 21, L"\u5716\u5f62\u7d30\u7bc0\uff1a", { L"\u95dc\u9589", L"\u9ad8", L"\u6975\u81f4" } }, // Traditional Chinese
+static const struct { int lang; const WCHAR *title; const WCHAR *level[4]; } kDetailTexts[] = {
+    {  3, L"Graphics detail:", { L"Off", L"High", L"Ultra", L"Extreme" } }, // English
+    {  5, L"Detale grafiki:", { L"wy\u0142\u0105czone", L"wysokie", L"ultra", L"ekstremalne" } }, // Polish
+    { 10, L"Grafikdetails:", { L"Aus", L"Hoch", L"Ultra", L"Extrem" } }, // German
+    { 11, L"D\u00e9tails graphiques :", { L"d\u00e9sactiv\u00e9s", L"\u00e9lev\u00e9s", L"ultra", L"extr\u00eames" } }, // French
+    { 12, L"Detalle gr\u00e1fico:", { L"desactivado", L"alto", L"ultra", L"extremo" } }, // Spanish
+    { 13, L"Dettaglio grafico:", { L"disattivato", L"alto", L"ultra", L"estremo" } }, // Italian
+    { 14, L"\u0414\u0435\u0442\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u0433\u0440\u0430\u0444\u0438\u043a\u0438:", { L"\u0432\u044b\u043a\u043b.", L"\u0432\u044b\u0441\u043e\u043a\u0430\u044f", L"\u0443\u043b\u044c\u0442\u0440\u0430", L"\u044d\u043a\u0441\u0442\u0440\u0435\u043c\u0430\u043b\u044c\u043d\u0430\u044f" } }, // Russian
+    { 15, L"Detaily grafiky:", { L"vypnuto", L"vysok\u00e9", L"ultra", L"extr\u00e9mn\u00ed" } }, // Czech
+    { 16, L"Grafikai r\u00e9szletess\u00e9g:", { L"ki", L"magas", L"ultra", L"extr\u00e9m" } }, // Hungarian
+    { 21, L"\u5716\u5f62\u7d30\u7bc0\uff1a", { L"\u95dc\u9589", L"\u9ad8", L"\u6975\u81f4", L"\u6975\u9650" } }, // Traditional Chinese
 };
 
 static int TextLanguage(void)
@@ -2440,7 +2441,7 @@ static DWORD WINAPI DetailThread(LPVOID unused)
             int now = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F12) & 0x8000);
             if (fg) GetWindowThreadProcessId(fg, &pid);
             if (now && !down && pid == GetCurrentProcessId()) {
-                level = (level + 1) % 3;
+                level = (level + 1) % 4;
                 InterlockedExchange(&g_detailLevel, level);
                 DetailApply(level);
                 DetailLogLevel(level, " (Ctrl+F12)");
@@ -2728,7 +2729,7 @@ static void TryPatch(void)
     {
         int level = IniInt("graphics", "detail", 0);
         int hotkey = IniFlag("graphics", "hotkey", 1) || IniFlag("debug", "detail_hotkey", 0); // the old [debug] name still counts
-        if (level < 0 || level > 2) level = 0;
+        if (level < 0 || level > 3) level = 0;
         Log("graphics detail (LOD, grass, shadow and light distances): %s",
             level || hotkey ? ApplyDetail(level, hotkey) : "off (detail=0)");
     }

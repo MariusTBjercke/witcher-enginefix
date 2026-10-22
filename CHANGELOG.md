@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- Graphics detail: a third level, extreme (`[graphics] detail=3`, also on Ctrl+F12), for fast PCs: shadows out to 180 m, distant lights stay on 10x farther, scenery keeps full detail 10x farther (with the same protection against holes as high and ultra), creatures and trees 4x, grass 3x the slider's range. Close to the ranges of the Higher LOD mod, without its debug mode, map reveal or holes.
+
 ## 0.6.2
 
 - Graphics detail: high and ultra stretch the level of detail for scenery again, now without holes. In the areas that have it (the Outskirts and a few others), buildings, fences, trees and bushes placed in the area, and the ground keep their full detail out to 2-3x the distance. The holes came from the game's visibility data per area section, which skipped detailed ground farther away than the game ever drew it; at high and ultra that check is skipped for these level-of-detail models only.

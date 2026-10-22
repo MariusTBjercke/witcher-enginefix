@@ -47,9 +47,10 @@ Optional, off by default:
   at startup, without the logos and the intro cinematic.
 - Longer draw distances: [graphics] detail=1 (high) or 2 (ultra) in the ini
   keeps full-detail scenery, creatures and trees, grass, shadows and lights
-  out to 1.5-3x the game's distances, on top of the options menu. Costs some
-  frame rate on older PCs. Ctrl+F12 in game cycles off/high/ultra and shows
-  the level on screen.
+  out to 1.5-3x the game's distances, on top of the options menu; 3 (extreme)
+  goes much farther, for fast PCs. Costs some frame rate on older PCs.
+  Ctrl+F12 in game cycles off/high/ultra/extreme and shows the level on
+  screen.
 
 
 The mod's own texts ("Exit game", "Borderless window", the Ctrl+F12 message)
@@ -83,7 +84,7 @@ CONFIGURATION
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
 The [qol] section holds the quality-of-life changes (on by default, except
 borderless and skip_intro). [graphics]
-detail=1 or 2 turns on the longer draw distances (0 = off). The [debug]
+detail=1, 2 or 3 turns on the longer draw distances (0 = off). The [debug]
 section holds diagnostics for development; leave them off.
 In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu
 fix's Lua part, "local KIDNAP_DOOR_FIX = false" the "The Source" door fix and
