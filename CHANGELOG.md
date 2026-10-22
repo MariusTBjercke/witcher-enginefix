@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fix 12: with the over-the-shoulder camera, pressing Shift in the main menu (also as part of Win+Shift+S) hid the cursor; it only showed while Shift was held. Shift now does nothing to the cursor in the main menu, as in the other cameras.
+- Diagnostics: `[debug] mouse_log` logs when the mouse starts and stops turning the camera and when the game takes the mouse exclusively, with the calling code.
+
 ## 0.6.3
 
 - Graphics detail: a third level, extreme (`[graphics] detail=3`, also on Ctrl+F12), for fast PCs: shadows out to 180 m, distant lights stay on 10x farther, scenery keeps full detail 10x farther (with the same protection against holes as high and ultra), creatures and trees 4x, grass 3x the slider's range. Close to the ranges of the Higher LOD mod, without its debug mode, map reveal or holes.

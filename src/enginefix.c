@@ -55,6 +55,10 @@
 // Fix 11: while the window is inactive the main loop sleeps 1 s per frame (the game pauses in the background), so
 //   after coming back it reacted up to 1 s late; the sleep now ends as soon as the window is in front again.
 //
+// Fix 12: with the over-the-shoulder camera chosen, Shift in the main menu worked as in a level: releasing it hid
+//   the cursor and let the mouse turn a camera that is not there (the cursor stayed gone until Shift was held).
+//   The Shift handler now leaves the cursor alone while the main menu is open.
+//
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
 //
@@ -2012,6 +2016,45 @@ static const char *ApplyInactiveSleepFix(void)
     return WriteCode(INACTIVE_SLEEP, code, 6) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 12: Shift hides the cursor in the main menu ---------------------------------------------
+// The input handler FUN_00423bd0 (ESI = the client object) handles Shift in the over-the-shoulder camera
+// ([0x00C500F0] = 2): down (0x004245E1) frees the cursor (FUN_0043ee00(0) on [ESI+0x48], ShowCursor 1), up
+// (0x00424650) turns mouse look back on (FUN_0043ee00(1), ShowCursor 0); FUN_00419b50 then parks the hidden
+// cursor every frame. Neither path checks for the main menu, where [ESI+0x48] exists too, so a Shift tap there
+// (also the one in Win+Shift+S) hid the cursor until Shift was held again. Each path loads [ESI+0x48] and skips
+// everything when it is NULL (mov ecx,[esi+0x48]; test ecx,ecx; jz); a call to a stub now does that load and
+// test and gives NULL while the main menu is open ([ESI+0x609], read by CClientExoApp::GetMainMenuPanelActive).
+
+#define SHIFT_DOWN_LOAD 0x00424612 // mov ecx,[esi+0x48]; test ecx,ecx (5 bytes), then jz 0x0042462E
+#define SHIFT_UP_LOAD   0x0042467D // the same, then jz 0x0042469A
+#define CLIENT_MAINMENU 0x609      // byte: 1 while the main menu is open
+
+static const BYTE kShiftLoadOrig[] = { 0x8B, 0x4E, 0x48, 0x85, 0xC9 };
+
+static const char *ApplyMainMenuShiftFix(void)
+{
+    static const BYTE stub[] = {
+        0x8B, 0x4E, 0x48,                                     // mov ecx,[esi+0x48]
+        0x80, 0xBE, CLIENT_MAINMENU & 0xFF, CLIENT_MAINMENU >> 8, 0x00, 0x00, 0x00, // cmp byte ptr [esi+0x609],0
+        0x74, 0x02,                                           // jz +2
+        0x33, 0xC9,                                           // xor ecx,ecx (main menu: as if there were no camera)
+        0x85, 0xC9,                                           // test ecx,ecx (the jz after the call reads it)
+        0xC3                                                  // ret
+    };
+    BYTE *code, call[5] = { 0xE8 };
+    if (!BytesMatch(SHIFT_DOWN_LOAD, kShiftLoadOrig, sizeof kShiftLoadOrig) ||
+        !BytesMatch(SHIFT_UP_LOAD, kShiftLoadOrig, sizeof kShiftLoadOrig))
+        return "skipped (bytes differ)";
+    code = VirtualAlloc(NULL, sizeof stub, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!code) return "FAILED (no memory)";
+    memcpy(code, stub, sizeof stub);
+    FlushInstructionCache(GetCurrentProcess(), code, sizeof stub);
+    *(DWORD *)(call + 1) = (DWORD)code - (SHIFT_DOWN_LOAD + 5);
+    if (!WriteCode(SHIFT_DOWN_LOAD, call, 5)) return "FAILED (VirtualProtect)";
+    *(DWORD *)(call + 1) = (DWORD)code - (SHIFT_UP_LOAD + 5);
+    return WriteCode(SHIFT_UP_LOAD, call, 5) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
 // In the isometric and hybrid cameras, holding the middle mouse button turns the camera with the mouse, also
 // in active pause (FUN_0041bb60 -> FUN_0041b830 hides the cursor and lets the mouse turn the camera, while
@@ -2692,6 +2735,116 @@ static const char *ApplyEngineLog(void)
     return "applied (engine messages, dialog bit changes, bits FUN_008aaf80 leaves set)";
 }
 
+// ---- Debug: who starts and ends mouse look ([debug] mouse_log) --------------------------------
+// FUN_0041b830 (thiscall handler, char, char; ret 8) hides the cursor and lets the mouse turn the camera
+// (handler+0x348 = 1, DirectInput mouse acquired exclusively); FUN_0041b9b0 (thiscall handler, int; ret 4)
+// ends it. In the main menu the cursor was seen to vanish after Win+Shift+S, Shift showing it while held, as
+// in the OTS camera. Each call is logged with its return address and the code addresses found on the stack
+// above it (the exe has no frame pointers), as is every change of the exclusive mouse (FUN_004cc3a0), which
+// hides the cursor too. Shift alone turned out to start it in the main menu without FUN_0041b830. Log only.
+
+#define TURNSTART_SITE  0x0041B830 // push ebx; push esi; mov esi,ecx; call FUN_0044e0d0
+#define TURNSTART_CALL  0x0044E0D0
+#define TURNEND_SITE    0x0041B9B0 // push esi; mov esi,ecx; cmp dword ptr [esi+0x48],0
+#define ACQUIRE_SITE    0x004CC3A0 // thiscall (mouse, int acquire) ret 4: (un)acquires the exclusive DirectInput mouse
+#define CAMERA_MODE     0x00C500F0 // 2 = over the shoulder
+#define MOUSELOG_LINES  200
+
+static const BYTE kTurnStartOrig[] = { 0x53, 0x56, 0x8B, 0xF1, 0xE8, 0x97, 0x28, 0x03, 0x00 };
+static const BYTE kTurnEndOrig[]   = { 0x56, 0x8B, 0xF1, 0x83, 0x7E, 0x48, 0x00 };
+static const BYTE kAcquireOrig[]   = { 0x51, 0x53, 0x55, 0x56, 0x8B, 0xF1 }; // push ecx/ebx/ebp/esi; mov esi,ecx
+typedef void (__fastcall *TurnStart_t)(void *, void *, int, int);
+typedef void (__fastcall *TurnEnd_t)(void *, void *, int);
+static TurnStart_t g_turnStartOriginal;
+static TurnEnd_t g_turnEndOriginal, g_acquireOriginal;
+static volatile LONG g_mouseLogLines;
+
+static void MouseLookNote(const char *what, BYTE *handler, DWORD *ret)
+{
+    char callers[160] = "";
+    int n = 0, i, len = 0;
+    if (InterlockedIncrement(&g_mouseLogLines) > MOUSELOG_LINES) return;
+    __try {
+        for (i = 1; i < 96 && n < 8; i++) { // dwords above the return address that look like exe code addresses
+            DWORD v = ret[i];
+            if (v >= 0x00401000 && v < 0x00AE0000) {
+                len += sprintf_s(callers + len, sizeof callers - len, " %06X", v);
+                n++;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try {
+        Log("mouse look: %s from %06X (stack:%s), camera mode %d, handler+0x48 %p, turning %u, foreground %s", what, ret[0],
+            callers, *(int *)CAMERA_MODE, *(void **)(handler + 0x48), handler[0x348],
+            GetForegroundWindow() == *(HWND *)GAME_HWND ? "game" : "other");
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("mouse look: %s from %06X (stack:%s)", what, ret[0], callers);
+    }
+}
+
+static void __fastcall TurnStartHook(void *handler, void *edx, int a, int b)
+{
+    MouseLookNote("start", (BYTE *)handler, (DWORD *)_AddressOfReturnAddress());
+    g_turnStartOriginal(handler, edx, a, b);
+}
+
+static void __fastcall TurnEndHook(void *handler, void *edx, int a)
+{
+    MouseLookNote("end", (BYTE *)handler, (DWORD *)_AddressOfReturnAddress());
+    g_turnEndOriginal(handler, edx, a);
+}
+
+// Called every frame with the current state; only changes are logged ([mouse+4] = acquired).
+static void __fastcall AcquireHook(void *mouse, void *edx, int acquire)
+{
+    int was = -1;
+    __try { was = *(int *)((BYTE *)mouse + 4); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (was != acquire) {
+        DWORD *ret = (DWORD *)_AddressOfReturnAddress();
+        char callers[160] = "";
+        int n = 0, i, len = 0;
+        if (InterlockedIncrement(&g_mouseLogLines) <= MOUSELOG_LINES) {
+            __try {
+                for (i = 1; i < 96 && n < 8; i++) {
+                    DWORD v = ret[i];
+                    if (v >= 0x00401000 && v < 0x00AE0000) {
+                        len += sprintf_s(callers + len, sizeof callers - len, " %06X", v);
+                        n++;
+                    }
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            Log("mouse look: exclusive mouse %s from %06X (stack:%s), camera mode %d, foreground %s",
+                acquire ? "acquire" : "release", ret[0], callers, *(int *)CAMERA_MODE,
+                GetForegroundWindow() == *(HWND *)GAME_HWND ? "game" : "other");
+        }
+    }
+    g_acquireOriginal(mouse, edx, acquire);
+}
+
+static const char *ApplyMouseLog(void)
+{
+    BYTE *t;
+    if (!BytesMatch(TURNSTART_SITE, kTurnStartOrig, sizeof kTurnStartOrig) ||
+        !BytesMatch(TURNEND_SITE, kTurnEndOrig, sizeof kTurnEndOrig) ||
+        !BytesMatch(ACQUIRE_SITE, kAcquireOrig, sizeof kAcquireOrig))
+        return "skipped (bytes differ)";
+    // the start's first 9 bytes end in a relative call, so its trampoline re-targets that call
+    t = VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!t) return "FAILED (no memory)";
+    memcpy(t, kTurnStartOrig, 4);
+    EmitCall(t + 4, TURNSTART_CALL);
+    t[9] = 0xE9;
+    PutRel32(t + 10, TURNSTART_SITE + sizeof kTurnStartOrig);
+    FlushInstructionCache(GetCurrentProcess(), t, 14);
+    g_turnStartOriginal = (TurnStart_t)t;
+    g_turnEndOriginal = (TurnEnd_t)Trampoline(kTurnEndOrig, sizeof kTurnEndOrig, TURNEND_SITE + sizeof kTurnEndOrig);
+    g_acquireOriginal = (TurnEnd_t)Trampoline(kAcquireOrig, sizeof kAcquireOrig, ACQUIRE_SITE + sizeof kAcquireOrig);
+    if (!g_turnEndOriginal || !g_acquireOriginal) return "FAILED (no memory)";
+    if (!JumpFrom(TURNSTART_SITE, TurnStartHook) || !JumpFrom(TURNEND_SITE, TurnEndHook) || !JumpFrom(ACQUIRE_SITE, AcquireHook))
+        return "FAILED (VirtualProtect)";
+    return "applied (camera turn start/end and exclusive mouse changes with callers)";
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -2718,6 +2871,7 @@ static void TryPatch(void)
     Log("fix 9 (texture wait polls every 250 ms): %s", FixEnabled("fix9") ? ApplyTexWaitFix() : "disabled in ini");
     Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
     Log("fix 11 (up to 1 s late after coming back to the game): %s", FixEnabled("fix11") ? ApplyInactiveSleepFix() : "disabled in ini");
+    Log("fix 12 (Shift hides the cursor in the main menu): %s", FixEnabled("fix12") ? ApplyMainMenuShiftFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     {
@@ -2737,6 +2891,7 @@ static void TryPatch(void)
     if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
     if (IniFlag("debug", "frame_log", 0)) Log("debug: frame log %s", ApplyFrameLog());
     if (IniFlag("debug", "engine_log", 0)) Log("debug: engine log %s", ApplyEngineLog());
+    if (IniFlag("debug", "mouse_log", 0)) Log("debug: mouse log %s", ApplyMouseLog());
 }
 
 static DWORD WINAPI PatchThread(LPVOID unused)
