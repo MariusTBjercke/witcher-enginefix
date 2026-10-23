@@ -29,6 +29,9 @@ What it fixes:
   resolutions above 1366x768. It comes back in the middle of the screen.
 - After an alt-tab back, the game reacts at once instead of up to a second
   later.
+- Hotkeys bound by mods (Witcher Speed Toggle's V/B, quick loot on a key
+  other than Space) no longer stop working after Alt+Tab in exclusive full
+  screen without DXVK. They are bound again after each Alt+Tab.
 
 Quality of life:
 - Over-the-shoulder camera: hold the middle mouse button during active pause
@@ -109,7 +112,8 @@ COMPATIBILITY
 - Witcher Speed Toggle and Witcher Quick Loot share System\Scripts\testtools.lua
   with this mod. This mod ships loader version 3, which runs all three and binds
   their hotkeys again after "Full screen" or the resolution is changed in the
-  options. Keep the newest version. If another mod puts back version 1, the menu fix stops working and the log says
+  options (the DLL does the same after Alt+Tab in exclusive full screen).
+  Keep the newest version. If another mod puts back version 1, the menu fix stops working and the log says
   "Lua save-list fix: INACTIVE". Copy testtools.lua from this mod back.
 - Witcher Quick Loot is no longer needed, but keeping it is fine: while its
   quickloot_hook.lua is installed, its hotkey and settings are used and this

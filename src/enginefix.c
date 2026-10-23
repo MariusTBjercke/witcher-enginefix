@@ -59,6 +59,10 @@
 //   the cursor and let the mouse turn a camera that is not there (the cursor stayed gone until Shift was held), and so
 //   did coming back to the game after some focus losses (the Snipping Tool). Both now leave the main menu's cursor alone.
 //
+// Fix 13: Alt+Tab in exclusive full screen (without DXVK) resets the device, which replaces the input manager and
+//   drops every hotkey bound with bindkey (mods' hotkeys, QoL 4 on another key). keybinding.ini is bound again
+//   after that reset, as at startup.
+//
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
 //
@@ -87,13 +91,14 @@
 #include <math.h>
 #include <intrin.h>
 #include <shlobj.h>
+#include <share.h>
 
 #pragma intrinsic(_ReturnAddress, _AddressOfReturnAddress)
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.7.1"
+#define ENGINEFIX_VERSION "0.7.2"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -2082,6 +2087,68 @@ static const char *ApplyMainMenuShiftFix(void)
     return WriteCode(REFOCUS_LOAD, call, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 13: bindkey hotkeys lost after Alt+Tab in exclusive full screen -------------------------------
+// bindkey (FUN_0041eeb0) stores a key's macro in the map at 0x00C51304 and registers the key with the input
+// manager ([0x00EE47A4]). The video reinit FUN_007503e0 deletes that manager and creates a new one, which gets only
+// the game's own keys (FUN_00402eb0), so every bindkey hotkey (Speed Toggle, Quick Loot on another key, QoL 4) is
+// dead afterwards. After a video mode change in the options (FUN_00404ff0) the shared Lua loader replays
+// keybinding.ini from OnReInitAuroraEnd. The other caller, FUN_0053e5e0, resets the device when Present reports it
+// lost and TestCooperativeLevel says D3DERR_DEVICENOTRESET (Alt+Tab in exclusive full screen, seen without DXVK),
+// and calls no Lua. Its call now goes through ResetReinit, which then replays System\keybinding.ini through bindkey
+// the way InitShortcuts (FUN_0041f030) does at startup: with [0x00C512EA] set, so bindkey does not save the file
+// again. InitShortcuts itself is not called because it never closes the file.
+
+#define RESET_REINIT_CALL 0x0053E695 // call FUN_007503e0 (cdecl, 4 arguments; add esp,0x10 follows)
+#define VIDEO_REINIT      0x007503E0
+#define BINDKEY           0x0041EEB0 // cdecl (char *line): "<key> <macro>", edits the line in place
+#define BINDKEY_REPLAYING 0x00C512EA // byte: 1 while InitShortcuts replays the file (bindkey does not save it)
+#define KEYBINDING_PATH   0x00C280C4 // const wchar_t *: L"keybinding.ini" (working directory System\)
+#define INPUT_MANAGER     0x00EE47A4
+#define RENDERER          0x00EE47BC // FUN_007503e0 does nothing without it
+
+typedef void (__cdecl *VideoReinit_t)(DWORD, DWORD, DWORD, DWORD);
+typedef const char *(__cdecl *Bindkey_t)(char *line);
+static char g_bindLine[0x3FF0]; // InitShortcuts' fgets buffer size
+
+static void __cdecl ResetReinit(DWORD a, DWORD b, DWORD c, DWORD d)
+{
+    int replaced = *(DWORD *)RENDERER && *(HWND *)GAME_HWND; // FUN_007503e0 deletes the manager only then
+    int lines = 0, bound = 0;
+    BYTE replaying;
+    FILE *f;
+
+    ((VideoReinit_t)VIDEO_REINIT)(a, b, c, d);
+    if (!replaced || !*(DWORD *)INPUT_MANAGER) {
+        Log("fix 13: device reset without a new input manager, nothing to bind");
+        return;
+    }
+    f = _wfsopen(*(const wchar_t **)KEYBINDING_PATH, L"rt", _SH_DENYNO); // as InitShortcuts opens it
+    if (!f) {
+        Log("fix 13: device reset, no keybinding.ini to bind again");
+        return;
+    }
+    replaying = *(BYTE *)BINDKEY_REPLAYING;
+    *(BYTE *)BINDKEY_REPLAYING = 1;
+    while (fgets(g_bindLine, sizeof g_bindLine, f)) {
+        const char *r;
+        if (g_bindLine[0] && g_bindLine[0] != '\n') lines++; // blank lines go to bindkey too, as in InitShortcuts
+        r = ((Bindkey_t)BINDKEY)(g_bindLine);
+        if (r && strcmp(r, "Key macro defined") == 0) bound++;
+    }
+    *(BYTE *)BINDKEY_REPLAYING = replaying;
+    fclose(f);
+    Log("fix 13: device reset, %d of %d keybinding.ini lines bound again", bound, lines);
+}
+
+static const char *ApplyResetBindFix(void)
+{
+    BYTE code[8] = { 0xE8, 0, 0, 0, 0, 0x83, 0xC4, 0x10 }; // call FUN_007503e0; add esp,0x10
+    *(DWORD *)(code + 1) = VIDEO_REINIT - (RESET_REINIT_CALL + 5);
+    if (!BytesMatch(RESET_REINIT_CALL, code, sizeof code)) return "skipped (bytes differ)";
+    *(DWORD *)(code + 1) = (DWORD)ResetReinit - (RESET_REINIT_CALL + 5);
+    return WriteCode(RESET_REINIT_CALL, code, 5) ? "applied" : "FAILED (VirtualProtect)";
+}
+
 // ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
 // In the isometric and hybrid cameras, holding the middle mouse button turns the camera with the mouse, also
 // in active pause (FUN_0041bb60 -> FUN_0041b830 hides the cursor and lets the mouse turn the camera, while
@@ -2951,6 +3018,8 @@ static void TryPatch(void)
     Log("fix 10 (cursor parked in the top-left area during mouse look): %s", FixEnabled("fix10") ? ApplyCursorParkFix() : "disabled in ini");
     Log("fix 11 (up to 1 s late after coming back to the game): %s", FixEnabled("fix11") ? ApplyInactiveSleepFix() : "disabled in ini");
     Log("fix 12 (Shift or a return to the game hides the cursor in the main menu): %s", FixEnabled("fix12") ? ApplyMainMenuShiftFix() : "disabled in ini");
+    Log("fix 13 (hotkeys bound with bindkey lost after Alt+Tab in exclusive full screen): %s",
+        FixEnabled("fix13") ? ApplyResetBindFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     {

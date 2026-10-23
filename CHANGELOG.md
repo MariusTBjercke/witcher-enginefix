@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2
+
+- Fix 13: hotkeys bound with `bindkey` (Witcher Speed Toggle's V/B, quick loot on a key other than Space) keep working after Alt+Tab in exclusive full screen without DXVK. Coming back, the game resets the device and rebuilds its input handling (`FUN_0053e5e0` → `FUN_007503e0`) with only its own keys, and calls no Lua, so the shared loader could not help there. The DLL now binds every line of `keybinding.ini` again after that reset, as at startup. `[fixes] fix13=0` turns it off.
+
 ## 0.7.1
 
 - Ships shared loader version 3 (`System\Scripts\testtools.lua`, identical in Witcher Speed Toggle 1.2.2 and Witcher Quick Loot 1.0.3): hotkeys bound with `bindkey` keep working after "Full screen" or the resolution is changed in the options. The engine rebuilt its input handling on every video mode change (`FUN_007503e0`) and re-registered only its own keys; the loader now replays `keybinding.ini` from `OnReInitAuroraEnd`. Affects the quick loot hotkey when it is set to a key other than Space. Alt+Tab in exclusive full screen without DXVK rebuilds it too, without a Lua callback; not covered yet.
