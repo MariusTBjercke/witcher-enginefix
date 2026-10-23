@@ -107,8 +107,9 @@ COMPATIBILITY
 - The area loading cache needs a CPU with SSE4.2 (any CPU since about 2008);
   without it that fix skips itself and logs why.
 - Witcher Speed Toggle and Witcher Quick Loot share System\Scripts\testtools.lua
-  with this mod. This mod ships loader version 2, which runs all three. If
-  another mod puts back version 1, the menu fix stops working and the log says
+  with this mod. This mod ships loader version 3, which runs all three and binds
+  their hotkeys again after "Full screen" or the resolution is changed in the
+  options. Keep the newest version. If another mod puts back version 1, the menu fix stops working and the log says
   "Lua save-list fix: INACTIVE". Copy testtools.lua from this mod back.
 - Witcher Quick Loot is no longer needed, but keeping it is fine: while its
   quickloot_hook.lua is installed, its hotkey and settings are used and this

@@ -1,6 +1,7 @@
--- Shared startup loader (loader version 2) used by Witcher Speed Toggle, Witcher Quick Loot and
--- Witcher Engine Fix. Version 2 adds enginefix_hook; hooks that are not installed are skipped, so it
--- also works with just one of the mods. Version 1 lacks enginefix_hook, so keep this one.
+-- Shared startup loader (loader version 3) used by Witcher Speed Toggle, Witcher Quick Loot and
+-- Witcher Engine Fix. Version 2 added enginefix_hook; hooks that are not installed are skipped, so it
+-- also works with just one of the mods. Version 3 keeps bindkey hotkeys working after the video mode
+-- changes (see ModHooks_ReplayKeybindings). Keep the newest version.
 --
 -- startup.luc always loads "testtools", but the retail game ships without it, so this file runs
 -- on every launch. It runs the hook file of each installed mod (System\Scripts\<name>.lua).
@@ -33,6 +34,38 @@ function ModHooks_BindScripts(tScripts)
         if key then
             console("bindkey " .. key .. " runscript " .. script)
         end
+    end
+end
+
+-- Runs every line of System\keybinding.ini through bindkey again. bindkey registers its key with the
+-- engine's input manager, and the engine replaces that manager whenever it changes the video mode
+-- (full screen on/off, resolution), then re-registers only the game's own keys. Every bindkey hotkey
+-- is dead from then on. OnReInitAuroraEnd (hwdepsettings) runs right after each such change, so the
+-- manager is always new here. Losing focus in exclusive full screen (Alt+Tab) without DXVK replaces
+-- the manager too, but calls no Lua; that case is not covered here.
+function ModHooks_ReplayKeybindings()
+    local file = io.open("keybinding.ini", "r")
+    if not file then return end
+    local tLines = {}
+    for line in file:lines() do
+        local _, _, sLine = string.find(line, "^%s*(.-)%s*$")
+        if sLine and sLine ~= "" then
+            table.insert(tLines, sLine)
+        end
+    end
+    file:close()
+
+    for _, sLine in ipairs(tLines) do
+        console("bindkey " .. sLine)
+    end
+end
+
+if OnReInitAuroraEnd and not ModHooks_OrigOnReInitAuroraEnd then
+    ModHooks_OrigOnReInitAuroraEnd = OnReInitAuroraEnd
+    OnReInitAuroraEnd = function(...)
+        local result = ModHooks_OrigOnReInitAuroraEnd(unpack(arg))
+        pcall(ModHooks_ReplayKeybindings)
+        return result
     end
 end
 

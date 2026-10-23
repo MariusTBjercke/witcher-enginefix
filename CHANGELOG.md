@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- Ships shared loader version 3 (`System\Scripts\testtools.lua`, identical in Witcher Speed Toggle 1.2.2 and Witcher Quick Loot 1.0.3): hotkeys bound with `bindkey` keep working after "Full screen" or the resolution is changed in the options. The engine rebuilt its input handling on every video mode change (`FUN_007503e0`) and re-registered only its own keys; the loader now replays `keybinding.ini` from `OnReInitAuroraEnd`. Affects the quick loot hotkey when it is set to a key other than Space. Alt+Tab in exclusive full screen without DXVK rebuilds it too, without a Lua callback; not covered yet.
+
 ## 0.7.0
 
 - Fix 12: with the over-the-shoulder camera, pressing Shift in the main menu (also as part of Win+Shift+S) hid the cursor; it only showed while Shift was held. Shift now does nothing to the cursor in the main menu, as in the other cameras. The same happened when the game got the focus back after the Snipping Tool; fixed the same way.
