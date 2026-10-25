@@ -63,6 +63,15 @@
 //   drops every hotkey bound with bindkey (mods' hotkeys, QoL 4 on another key). keybinding.ini is bound again
 //   after that reset, as at startup.
 //
+// Fix 14: the physics library (Karma) frees some objects twice, and its pools then hand one block to two owners,
+//   which corrupts the physics world and crashes the game later (0x9FFFE0, seen in combat). A second free of a
+//   block that is already free is skipped and logged; freed blocks wait in a short queue before reuse so a late
+//   second free is caught too.
+//
+// Fix 15: a charge attack (held attack button) released while the target is out of reach, or cut short another way,
+//   left Geralt in his attack sequence without a combat round, and every further attack failed until he moved. That
+//   sequence is now ended the way moving ends it: at that release, and at the first refused attack in that state.
+//
 // QoL 1 ([qol] ots_pause_mmb_camera): in the over-the-shoulder camera, active pause shows the cursor and
 //   leaves only edge scrolling; holding the middle mouse button now turns the camera, as it does in the other cameras.
 //
@@ -83,6 +92,10 @@
 //
 // QoL 7 ([qol] continue_button): "Continue" at the top of the main menu loads the newest save. All in
 //   Scripts\enginefix_hook.lua; the DLL only logs its state.
+//
+// QoL 8 ([qol] endurance_blink): an attack that fails because Endurance cannot pay for it (a full charge with too
+//   little Endurance) did nothing visible; the Endurance bar now blinks red, as the game does elsewhere. Opt-in
+//   [qol] endurance_message also says in the message line how much the attack needs and how much there is.
 //
 // QoL changes ([qol]) can be turned off the same way. Diagnostics ([debug]) are off unless the ini turns them on.
 
@@ -2149,6 +2162,411 @@ static const char *ApplyResetBindFix(void)
     return WriteCode(RESET_REINIT_CALL, code, 5) ? "applied" : "FAILED (VirtualProtect)";
 }
 
+// ---- Fix 15: charge attack released out of reach leaves the attack sequence running -----------------------
+// Holding the attack button runs the charge action (aiactionattackpowerupload, FUN_008dd9f0). Pressing attack
+// during a fight ends the current combat round first, so while charging Geralt is in his attack sequence
+// (creature+0xC58) without a round. On release, when the target is out of reach (0x008DDDC8), the action cancels
+// the attack (FUN_008897b0, FUN_008d4c60) and ends, but the sequence is never ended. From then on every attack is
+// refused (the client sends "attack failed") until Geralt moves: the move handler (FUN_0096b480) ends the sequence
+// with FUN_008a45f0(creature+0xC58, 1). Seen in four locks in the chapter 5 Vizima battle (an enemy surrounded by
+// other fighters steps out of reach). The call to FUN_008d4c60 in that branch now goes to a function that calls it
+// and then ends the player's sequence the same way, if he is still in one without a combat round.
+
+#define POWERUP_FAR_CALL 0x008DDDDB // call FUN_008d4c60 (thiscall, no stack arguments)
+#define POWERUP_FAR_FUNC 0x008D4C60
+#define SEQUENCE_END     0x008A45F0 // thiscall FUN_008a45f0(creature+0xC58, int) ret 4
+// from 0x008DDDD2: mov ecx,esi; call FUN_008897b0; mov ecx,esi; call FUN_008d4c60; mov eax,[0x00BCC8DC]
+static const BYTE kPowerupFar[] = { 0x8B, 0xCE, 0xE8, 0xD7, 0xB9, 0xFA, 0xFF, 0x8B, 0xCE, 0xE8, 0x80, 0x6E, 0xFF, 0xFF,
+                                    0xA1, 0xDC, 0xC8, 0xBC, 0x00 };
+static volatile LONG g_fix15Count;
+
+static void __fastcall PowerupFarHook(BYTE *c)
+{
+    int stale = 0;
+    long seq = -1;
+    ((void (__fastcall *)(BYTE *))POWERUP_FAR_FUNC)(c);
+    __try {
+        stale = *(DWORD *)(c + 4) == 0x7FFFFFFF && *(DWORD *)(c + 0xA44) != 0 && *(DWORD *)(c + 0xC58) != 0 &&
+                *(DWORD *)(*(BYTE **)(c + 0xA34) + 0x1D8) == 0;
+        seq = *(long *)(c + 0xC6C);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        stale = 0;
+    }
+    if (!stale) return;
+    ((void (__fastcall *)(BYTE *, void *, int))SEQUENCE_END)(c + 0xC58, NULL, 1);
+    if (InterlockedIncrement(&g_fix15Count) <= 200)
+        Log("fix 15: charge attack released out of reach, ended the player's attack sequence %ld", seq);
+}
+
+// The same stale state also comes from other paths (2026-10-25 22:49: a full charge started, then AIActionAttackObject
+// cancelled it from 0x00865DD1 when its timer +0xDBC ran out, and the sequence stayed). Wherever it comes from, every
+// click then ends in "attack failed" from the client, which the server handles in FUN_0096fb70 (message 0x28) with
+// a call to FUN_008d4c60 at 0x0097013D. That call now also ends the player's sequence when he is in one without a
+// combat round and is not charging (no charge action 0x45 at the head of his queue): the click that found the stale
+// state fails as before, the next one works.
+#define ATTACKFAILED_CALL 0x0097013D // mov ecx,edi; call FUN_008d4c60; cmp dword [0x00C5024C],0
+static const BYTE kAttackFailed[] = { 0x8B, 0xCF, 0xE8, 0x1E, 0x4B, 0xF6, 0xFF, 0x83, 0x3D, 0x4C, 0x02, 0xC5, 0x00, 0x00 };
+
+static void __fastcall AttackFailedHook(BYTE *c)
+{
+    int stale = 0;
+    long seq = -1;
+    ((void (__fastcall *)(BYTE *))POWERUP_FAR_FUNC)(c);
+    __try {
+        DWORD n = *(DWORD *)(c + 0xC8);
+        DWORD **queue = *(DWORD ***)(c + 0xC4);
+        int charging = n > 0 && queue && queue[0] && *queue[0] == 0x45;
+        stale = !charging && *(DWORD *)(c + 4) == 0x7FFFFFFF && *(DWORD *)(c + 0xA44) != 0 && *(DWORD *)(c + 0xC58) != 0 &&
+                *(DWORD *)(*(BYTE **)(c + 0xA34) + 0x1D8) == 0;
+        seq = *(long *)(c + 0xC6C);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        stale = 0;
+    }
+    if (!stale) return;
+    ((void (__fastcall *)(BYTE *, void *, int))SEQUENCE_END)(c + 0xC58, NULL, 1);
+    if (InterlockedIncrement(&g_fix15Count) <= 200)
+        Log("fix 15: attack refused while stuck in a stale attack sequence %ld, ended it (the next attack works)", seq);
+}
+
+static const char *ApplyPowerupFarFix(void)
+{
+    BYTE call[5] = { 0xE8 };
+    int ok = 0;
+    if (BytesMatch(POWERUP_FAR_CALL - 9, kPowerupFar, sizeof kPowerupFar)) {
+        *(DWORD *)(call + 1) = (DWORD)PowerupFarHook - (POWERUP_FAR_CALL + 5);
+        if (!WriteCode(POWERUP_FAR_CALL, call, 5)) return "FAILED (VirtualProtect)";
+        ok++;
+    } else Log("fix 15: charge release site skipped (bytes differ)");
+    if (BytesMatch(ATTACKFAILED_CALL - 2, kAttackFailed, sizeof kAttackFailed)) {
+        *(DWORD *)(call + 1) = (DWORD)AttackFailedHook - (ATTACKFAILED_CALL + 5);
+        if (!WriteCode(ATTACKFAILED_CALL, call, 5)) return "FAILED (VirtualProtect)";
+        ok++;
+    } else Log("fix 15: attack-failed site skipped (bytes differ)");
+    return ok == 2 ? "applied (charge release out of reach, attack refused in a stale sequence)"
+         : ok ? "partly applied (see above)" : "skipped (bytes differ)";
+}
+
+// ---- Fix 14: Karma physics pool double frees ------------------------------------------------------------
+// The game's physics is MathEngine Karma. Its fixed-size pools (MePoolx) are called through the function table
+// MePoolAPI at 0x00C31308 (create, destroy, reset, get, put, used, free; all stdcall). Get returns
+// stack[used++], put does stack[--used] = block, and nothing checks that the block is in use. So a block freed
+// twice sits twice on the free part of the stack, is handed out to two owners and the second one zeroes the
+// first's live data. The crash dump of 0x9FFFE0 (2026-10-25) showed the world's constraint pool with 14 live
+// joints and contact groups on its free part, and the crash itself was a new contact group handed the block of
+// a live joint (the root of the world's constraint dictionary, which the dictionary insert then walked into).
+// We wrap the table's get, put, destroy and reset and keep a free bit per block:
+// - a put of a block that is already free is skipped and logged with its callers;
+// - freed blocks wait in a short queue (up to 256, an eighth of the pool) before they go back on the stack, so a
+//   block freed a second time a little later is still free and gets caught too (without the queue it would
+//   already belong to someone else);
+// - MdtConstraintDestroy (0x009F7BC0) and MdtContactDestroy (0x009F7540) return at once for a block that is
+//   already free, because both write into the block (dictionary and contact list unlinking) before the put;
+// - a get that returns a block in use (a stale copy from before the tracking started) takes the next one.
+// The pool's stack and counts stay Karma's own, so turning the fix off leaves nothing behind.
+
+#define KPOOL_API            0x00C31308 // MePoolAPI, 7 function pointers
+#define KPOOL_DESTROY_SLOT   0x00C3130C
+#define KPOOL_RESET_SLOT     0x00C31310
+#define KPOOL_GET_SLOT       0x00C31314
+#define KPOOL_PUT_SLOT       0x00C31318
+#define KCONSTRAINT_DESTROY  0x009F7BC0 // stdcall (constraint)
+#define KCONTACT_DESTROY     0x009F7540 // stdcall (contact)
+#define KPOOL_MAX            64
+#define KPOOL_QUEUE          256
+
+typedef struct {
+    DWORD unknown;
+    BYTE *base;   // blocks
+    void **stack; // stack[used..cap) are the free blocks
+    int used, size, cap, aligned;
+} KPool;
+
+typedef struct {
+    KPool *pool;
+    BYTE *base;
+    int size, cap;
+    BYTE *freeBits;
+    void **queue;
+    int qmax, qhead, qn;
+} KPoolState;
+
+typedef void *(__stdcall *KPoolGet_t)(KPool *pool);
+typedef void (__stdcall *KPoolPut_t)(KPool *pool, void *block);
+typedef void (__stdcall *KPoolOne_t)(KPool *pool);
+typedef void (__stdcall *KDestroy_t)(BYTE *block);
+
+static const DWORD kKPoolOrig[5] = { 0x009FD810, 0x009FD8A0, 0x009FD7E0, 0x009FD8E0, 0x009FD900 };
+static const BYTE kKConstraintDestroyOrig[] = { 0x56, 0x8B, 0x74, 0x24, 0x08, 0x56, 0xE8, 0x15, 0x00, 0x00, 0x00 };
+static const BYTE kKContactDestroyOrig[] = { 0x56, 0x8B, 0x74, 0x24, 0x08, 0x8B, 0x46, 0x68, 0x57, 0x50, 0xE8 };
+static KPoolGet_t g_kpGet;
+static KPoolPut_t g_kpPut;
+static KPoolOne_t g_kpDestroy, g_kpReset;
+static KDestroy_t g_kConstraintDestroy, g_kContactDestroy; // trampolines
+static KPoolState g_kp[KPOOL_MAX];
+static CRITICAL_SECTION g_kpLock;
+static LONG g_kpTracked, g_kpEvents;
+
+static int KpIndex(const KPoolState *s, const void *block)
+{
+    DWORD off = (DWORD)((const BYTE *)block - s->base);
+    if ((const BYTE *)block < s->base || off % (DWORD)s->size || off / (DWORD)s->size >= (DWORD)s->cap) return -1;
+    return (int)(off / (DWORD)s->size);
+}
+
+static int KpIsFree(const KPoolState *s, int i) { return (s->freeBits[i >> 3] >> (i & 7)) & 1; }
+static void KpSetFree(KPoolState *s, int i, int on)
+{
+    if (on) s->freeBits[i >> 3] |= (BYTE)(1 << (i & 7));
+    else s->freeBits[i >> 3] &= (BYTE)~(1 << (i & 7));
+}
+
+static void KpDrop(KPoolState *s)
+{
+    if (s->freeBits) VirtualFree(s->freeBits, 0, MEM_RELEASE);
+    memset(s, 0, sizeof *s);
+}
+
+static KPoolState *KpFind(const KPool *pool)
+{
+    int i;
+    for (i = 0; i < KPOOL_MAX; i++)
+        if (g_kp[i].pool == pool) return &g_kp[i];
+    return NULL;
+}
+
+// Starts tracking a pool from its current stack: blocks on the free part are free, all others in use.
+static KPoolState *KpTrack(KPool *pool)
+{
+    KPoolState *s = KpFind(pool);
+    int i, dups = 0, foreign = 0, bytes, slot;
+
+    __try {
+        if (s && s->base == pool->base && s->size == pool->size && s->cap == pool->cap) return s;
+        if (s) KpDrop(s); // the pool was set up again without going through destroy
+        if (!pool->base || !pool->stack || pool->size < 4 || pool->size > (1 << 20) || pool->cap < 1 ||
+            pool->cap > (1 << 22) || pool->used < 0 || pool->used > pool->cap)
+            return NULL;
+        for (slot = 0; slot < KPOOL_MAX && g_kp[slot].pool; slot++) {}
+        if (slot == KPOOL_MAX) return NULL;
+        s = &g_kp[slot];
+        s->qmax = pool->cap >= 64 ? min(KPOOL_QUEUE, pool->cap / 8) : 0;
+        bytes = ((pool->cap + 7) / 8 + 3) & ~3;
+        s->freeBits = VirtualAlloc(NULL, bytes + s->qmax * sizeof(void *), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!s->freeBits) return NULL;
+        s->queue = (void **)(s->freeBits + bytes);
+        s->pool = pool;
+        s->base = pool->base;
+        s->size = pool->size;
+        s->cap = pool->cap;
+        for (i = pool->used; i < pool->cap; i++) {
+            int b = KpIndex(s, pool->stack[i]);
+            if (b < 0) foreign++;
+            else if (KpIsFree(s, b)) dups++;
+            else KpSetFree(s, b, 1);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (s && s->pool == pool) KpDrop(s);
+        return NULL;
+    }
+    if (InterlockedIncrement(&g_kpTracked) <= 12 || dups || foreign)
+        Log("fix 14: tracking Karma pool %p: %d blocks of %d bytes, %d in use%s", pool, s->cap, s->size, pool->used,
+            dups || foreign ? " (and stale entries on its free list)" : "");
+    if (dups || foreign) Log("fix 14:   %d blocks twice and %d foreign pointers on that free list", dups, foreign);
+    return s;
+}
+
+// Logs the first 40 events in full, then every 100th, with the caller and the code addresses found on the stack
+// above it (witcher.exe is built without frame pointers, so these are likely, not certain, return addresses).
+static void KpNote(const char *what, const KPoolState *s, const void *block, const DWORD *frame)
+{
+    char chain[160];
+    LONG n = InterlockedIncrement(&g_kpEvents);
+    int i, len = 0, found = 0;
+
+    if (n > 40 && n % 100) return;
+    __try {
+        len = sprintf_s(chain, sizeof chain, "%08X", (unsigned)frame[0]);
+        for (i = 1; i < 32 && found < 6; i++) {
+            DWORD v = frame[i];
+            if (v > 0x00401000 && v < 0x00B3F000) {
+                len += sprintf_s(chain + len, sizeof chain - len, " <- %08X", (unsigned)v);
+                found++;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (!s) Log("fix 14: %s, skipped: block %p, called from %s (%ld so far)", what, block, len ? chain : "?", n);
+    else Log("fix 14: %s, skipped: block %p of pool %p (%d bytes, %d in use), type at +0xB0 %d, called from %s (%ld so far)",
+             what, block, s->pool, s->size, s->pool->used, s->size > 0xB4 ? *(const int *)((const BYTE *)block + 0xB0) : -2,
+             len ? chain : "?", n);
+}
+
+static void KpFlush(KPoolState *s)
+{
+    while (s->qn) {
+        g_kpPut(s->pool, s->queue[s->qhead]);
+        s->qhead = (s->qhead + 1) % s->qmax;
+        s->qn--;
+    }
+    s->qhead = 0;
+}
+
+static void *__stdcall KpGet(KPool *pool)
+{
+    KPoolState *s;
+    void *block;
+    int i;
+
+    EnterCriticalSection(&g_kpLock);
+    s = KpTrack(pool);
+    block = g_kpGet(pool);
+    if (!block && s && s->qn) { // pool empty except for the queue: hand the queue back first
+        KpFlush(s);
+        block = g_kpGet(pool);
+    }
+    if (s) {
+        while (block && (i = KpIndex(s, block)) >= 0 && !KpIsFree(s, i)) {
+            KpNote("free list handed out a block in use", s, block, (const DWORD *)_AddressOfReturnAddress());
+            block = g_kpGet(pool);
+        }
+        if (block && (i = KpIndex(s, block)) >= 0) KpSetFree(s, i, 0);
+    }
+    LeaveCriticalSection(&g_kpLock);
+    return block;
+}
+
+static void __stdcall KpPut(KPool *pool, void *block)
+{
+    KPoolState *s;
+    int i;
+
+    EnterCriticalSection(&g_kpLock);
+    s = KpTrack(pool);
+    if (s && (i = KpIndex(s, block)) >= 0) {
+        if (KpIsFree(s, i)) {
+            KpNote("block freed twice", s, block, (const DWORD *)_AddressOfReturnAddress());
+            LeaveCriticalSection(&g_kpLock);
+            return;
+        }
+        KpSetFree(s, i, 1);
+        if (s->qmax) {
+            if (s->qn == s->qmax) { // queue full: the oldest goes back on the stack, the new one takes its place
+                void *old = s->queue[s->qhead];
+                s->queue[s->qhead] = block;
+                s->qhead = (s->qhead + 1) % s->qmax;
+                g_kpPut(pool, old);
+            } else {
+                s->queue[(s->qhead + s->qn) % s->qmax] = block;
+                s->qn++;
+            }
+            LeaveCriticalSection(&g_kpLock);
+            return;
+        }
+    }
+    g_kpPut(pool, block);
+    LeaveCriticalSection(&g_kpLock);
+}
+
+static void __stdcall KpDestroy(KPool *pool)
+{
+    KPoolState *s;
+    EnterCriticalSection(&g_kpLock);
+    if ((s = KpFind(pool)) != NULL) KpDrop(s); // queued blocks go with the pool's memory
+    g_kpDestroy(pool);
+    LeaveCriticalSection(&g_kpLock);
+}
+
+static void __stdcall KpReset(KPool *pool)
+{
+    KPoolState *s;
+    EnterCriticalSection(&g_kpLock);
+    if ((s = KpFind(pool)) != NULL) KpDrop(s); // tracked again from the new stack on the next get or put
+    g_kpReset(pool);
+    LeaveCriticalSection(&g_kpLock);
+}
+
+// The pool of a constraint is its world's (world at +0x40, pool at world+0x12C); destroy leaves +0x40 alone. A
+// contact's world is its group's (group at +0x68), and destroying a contact clears +0x68, so a contact without a
+// group has been destroyed already (the original would read [0x40] there).
+#define KWORLD_POOL 0x12C
+
+static const KPoolState *KpFreeIn(const BYTE *world, const BYTE *block) // the pool's state if block is free in it
+{
+    const KPoolState *s = KpFind((const KPool *)(world + KWORLD_POOL));
+    int b;
+    if (!s || (b = KpIndex(s, block)) < 0) return NULL;
+    return KpIsFree(s, b) ? s : NULL;
+}
+
+static void __stdcall KConstraintDestroy(BYTE *c)
+{
+    const KPoolState *s = NULL;
+    EnterCriticalSection(&g_kpLock);
+    __try {
+        s = KpFreeIn(*(BYTE **)(c + 0x40), c);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (s) KpNote("constraint destroyed twice", s, c, (const DWORD *)_AddressOfReturnAddress());
+    LeaveCriticalSection(&g_kpLock);
+    if (!s) g_kConstraintDestroy(c);
+}
+
+static void __stdcall KContactDestroy(BYTE *c)
+{
+    const KPoolState *s = NULL;
+    BYTE *group = NULL;
+    EnterCriticalSection(&g_kpLock);
+    __try {
+        group = *(BYTE **)(c + 0x68);
+        if (group) s = KpFreeIn(*(BYTE **)(group + 0x40), c);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (!group) KpNote("contact destroyed twice (it has no group any more)", NULL, c, (const DWORD *)_AddressOfReturnAddress());
+    else if (s) KpNote("contact destroyed twice", s, c, (const DWORD *)_AddressOfReturnAddress());
+    LeaveCriticalSection(&g_kpLock);
+    if (group && !s) g_kContactDestroy(c);
+}
+
+static const char *ApplyKarmaPoolFix(void)
+{
+    BYTE *tramp, jmp[5];
+    DWORD table[5];
+    int i;
+
+    memcpy(table, (void *)KPOOL_API, sizeof table);
+    for (i = 0; i < 5; i++)
+        if (table[i] != kKPoolOrig[i]) return "skipped (pool table differs)";
+    if (!BytesMatch(KCONSTRAINT_DESTROY, kKConstraintDestroyOrig, sizeof kKConstraintDestroyOrig) ||
+        !BytesMatch(KCONTACT_DESTROY, kKContactDestroyOrig, sizeof kKContactDestroyOrig))
+        return "skipped (bytes differ)";
+    tramp = VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return "FAILED (no memory)";
+    for (i = 0; i < 2; i++) { // the 5 entry bytes (push esi; mov esi,[esp+8]), then back into the function
+        DWORD fn = i ? KCONTACT_DESTROY : KCONSTRAINT_DESTROY;
+        BYTE *t = tramp + i * 16;
+        memcpy(t, (void *)fn, 5);
+        t[5] = 0xE9;
+        PutRel32(t + 6, fn + 5);
+    }
+    FlushInstructionCache(GetCurrentProcess(), tramp, 32);
+    g_kConstraintDestroy = (KDestroy_t)tramp;
+    g_kContactDestroy = (KDestroy_t)(tramp + 16);
+    g_kpDestroy = (KPoolOne_t)table[1];
+    g_kpReset = (KPoolOne_t)table[2];
+    g_kpGet = (KPoolGet_t)table[3];
+    g_kpPut = (KPoolPut_t)table[4];
+    InitializeCriticalSection(&g_kpLock);
+
+    table[1] = (DWORD)KpDestroy;
+    table[2] = (DWORD)KpReset;
+    table[3] = (DWORD)KpGet;
+    table[4] = (DWORD)KpPut;
+    if (!WriteCode(KPOOL_DESTROY_SLOT, (BYTE *)(table + 1), 4 * sizeof(DWORD))) return "FAILED (VirtualProtect)";
+    jmp[0] = 0xE9;
+    *(DWORD *)(jmp + 1) = (DWORD)KConstraintDestroy - (KCONSTRAINT_DESTROY + 5);
+    if (!WriteCode(KCONSTRAINT_DESTROY, jmp, 5)) return "FAILED (VirtualProtect)";
+    *(DWORD *)(jmp + 1) = (DWORD)KContactDestroy - (KCONTACT_DESTROY + 5);
+    if (!WriteCode(KCONTACT_DESTROY, jmp, 5)) return "FAILED (VirtualProtect)";
+    return "applied";
+}
+
 // ---- QoL 1: turn the OTS camera with the middle mouse button during active pause ---------------
 // In the isometric and hybrid cameras, holding the middle mouse button turns the camera with the mouse, also
 // in active pause (FUN_0041bb60 -> FUN_0041b830 hides the cursor and lets the mouse turn the camera, while
@@ -2991,6 +3409,493 @@ static const char *ApplyMouseLog(void)
     return "applied (camera turn start/end and exclusive mouse changes with callers)";
 }
 
+// ---- Debug: combat lock ([debug] combat_log) ------------------------------------------------
+// In the combat lock (docs/research.md "Combat lock") Geralt and an enemy stand in combat idle and every
+// click is refused: "AIActionAttackObject failed because of m_bActionBlocked". AIActionAttackObject
+// (FUN_00864ae0) builds the attacker's modifiers against the target with FUN_008d10c0 (thiscall, ret 0xC,
+// result in the static block 0x011BF018) and refuses the attack when the block's +0x5F4 is set. The block is a
+// sum (FUN_007a02f0, thiscall(dst, src), flags ORed) of equipped items' abilities, the creature's abilities and
+// effects, and both sides' attack sequences; in two dumps of the lock no ability or sequence had the flag, so
+// the source is something short-lived. This option turns on four of the engine's own combat dumps (written
+// through engine_log, which it turns on too) and, while that call runs, records every summed block that
+// carries the flag. A refused attack of the player is logged with those sources and the player's sequence,
+// combat round and target. Log only.
+
+#define COMBATSTATS_CALL  0x00864BBD // call FUN_008d10c0 in AIActionAttackObject
+#define COMBATSTATS_FUNC  0x008D10C0 // thiscall (owner, target, ?, ?) ret 0xC -> modifier block
+#define STATSUM_SITE      0x007A02F0 // thiscall FUN_007a02f0(dst, src): dst += src
+#define STATSUM_RESUME    0x007A02F8
+#define BLOCKED_OFS       0x5F4      // m_bActionBlocked in a modifier block (0x618 bytes)
+#define STATS_BASE        0x011BEA00 // the block FUN_008d10c0 starts from
+#define ABILITY_TABLE     0x00C51BAC // begin, end: pointers to abilities (modifier block at +0x5C, name at [+4])
+#define SEQUENCE_TABLE    0x00C559DC // begin, end: attack sequences, 0xE9C bytes (attacker block +0xEC, target +0x704)
+#define COMBAT_SOURCES    8
+
+static const BYTE kCombatStatsCall[] = { 0x50, 0x8B, 0xCB, 0xE8, 0xFE, 0xC4, 0x06, 0x00, 0x83, 0xB8, 0xF4, 0x05, 0x00, 0x00, 0x00 };
+static const BYTE kStatSumOrig[]     = { 0x8B, 0x54, 0x24, 0x04, 0xF3, 0x0F, 0x10, 0x02 }; // mov edx,[esp+4]; movss xmm0,[edx]
+
+typedef struct {
+    const char *name; // g_cAuroraSettings member
+    DWORD var, nameStr, push; // as DetailVar: the variable, its name string, the registration's "push var"
+    int ok;
+} CombatFlag;
+static CombatFlag g_combatFlags[] = {
+    { "m_bDumpPlayerCombatRounds",     0x00C50250, 0x00B5A714, 0x00B1CF12 }, // "PLAYER EndCombatRound", "calling ECR from ..."
+    { "m_bDumpPlayerAttackData",       0x00C5024C, 0x00B5A6E8, 0x00B1CEE2 },
+    { "m_bDumpAttackCancellationInfo", 0x00C5023C, 0x00B5CAEC, 0x00B1F702 }, // "... failed because of m_bActionBlocked"
+    { "m_bDumpCombatInformation",      0x00C50340, 0x00B5C4FC, 0x00B1F0A2 },
+};
+#define COMBAT_FLAG_COUNT (sizeof g_combatFlags / sizeof g_combatFlags[0])
+
+typedef BYTE *(__fastcall *CombatStats_t)(void *, void *, void *, DWORD, DWORD); // thiscall, dummy EDX
+static volatile DWORD g_combatProbeThread; // the thread inside the attack check's FUN_008d10c0, else 0
+static DWORD g_combatSrc[COMBAT_SOURCES], g_combatRet[COMBAT_SOURCES];
+static int g_combatSources;
+static BYTE *volatile g_combatPlayer;      // the player's server creature, once seen in one of the hooks
+static int g_combatRefused, g_combatQuiet; // refusals in a row; of them not written out
+static DWORD g_combatLastLine;
+
+// Called from the FUN_007a02f0 stub for a source block with the flag, while the probe is on.
+static void __cdecl CombatRecordSource(DWORD src, DWORD dst, DWORD ret)
+{
+    (void)dst;
+    if (g_combatProbeThread != GetCurrentThreadId()) return;
+    if (g_combatSources < COMBAT_SOURCES) {
+        g_combatSrc[g_combatSources] = src;
+        g_combatRet[g_combatSources] = ret;
+    }
+    g_combatSources++;
+}
+
+static const char *CombatSourceKind(DWORD ret) // the call sites of FUN_007a02f0 in FUN_008d10c0
+{
+    switch (ret) {
+    case 0x008D12EB: return "equipped item's ability";
+    case 0x008D1424: return "own ability";
+    case 0x008D14F9: return "effect";
+    case 0x008D15B9: return "extra ability list";
+    case 0x008D162A: return "own attack sequence";
+    case 0x008D1692: return "target's attack sequence";
+    default:         return "other";
+    }
+}
+
+static void CombatDescribe(DWORD src, char *out, size_t size)
+{
+    DWORD *tb, *te, sb, se, i;
+    out[0] = 0;
+    __try {
+        tb = *(DWORD **)ABILITY_TABLE;
+        te = *(DWORD **)(ABILITY_TABLE + 4);
+        for (i = 0; tb && tb + i < te; i++)
+            if (tb[i] && tb[i] + 0x5C == src) {
+                const char *name = *(const char **)(tb[i] + 4);
+                sprintf_s(out, size, "ability %lu", i);
+                __try {
+                    if (name) sprintf_s(out, size, "ability %lu '%.48s'", i, name);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                return;
+            }
+        sb = *(DWORD *)SEQUENCE_TABLE;
+        se = *(DWORD *)(SEQUENCE_TABLE + 4);
+        if (sb && src >= sb && src < se) {
+            DWORD off = (src - sb) % 0xE9C;
+            sprintf_s(out, size, "sequence %lu, %s block", (src - sb) / 0xE9C,
+                      off == 0xEC ? "attacker" : off == 0x704 ? "target" : "unknown");
+            return;
+        }
+        // an effect's block is at +0x90 or +0x6A8: show the start of both candidate objects
+        {
+            const DWORD *a = (const DWORD *)(src - 0x90), *b = (const DWORD *)(src - 0x6A8);
+            sprintf_s(out, size, "not an ability or sequence; [src-0x90] %08lX %08lX %08lX %08lX, [src-0x6A8] %08lX %08lX %08lX %08lX",
+                      a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (!out[0]) strcpy_s(out, size, "(unreadable)");
+    }
+}
+
+static void CombatRefused(BYTE *owner, BYTE *target)
+{
+    BYTE *c, *round, *stats;
+    DWORD now = GetTickCount();
+    int i, n = g_combatSources;
+    char line[512];
+
+    __try {
+        c = *(BYTE **)owner;
+        if (!*(DWORD *)(c + 0xA44)) return; // NPCs use the same check; only the player matters here
+        g_combatPlayer = c;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    g_combatRefused++;
+    if (g_combatRefused > 1 && now - g_combatLastLine < 2000) { // the same lock, clicked again
+        g_combatQuiet++;
+        return;
+    }
+    g_combatLastLine = now;
+    __try {
+        round = *(BYTE **)(c + 0xA34);
+        stats = *(BYTE **)(c + 0x350);
+        sprintf_s(line, sizeof line,
+                  "combat log: attack REFUSED (m_bActionBlocked), refusal %d in a row%s; player %08lX -> target %08lX; "
+                  "in sequence %lu (sequence %ld), combat round %lu (busy %lu), round target %08lX, attack target %08lX; "
+                  "%lu abilities, %lu effects; base block flag %lu; %d source(s) with the flag",
+                  g_combatRefused, g_combatQuiet ? " (repeats in between not written)" : "", *(DWORD *)(c + 4),
+                  target ? *(DWORD *)(target + 4) : 0, *(DWORD *)(c + 0xC58), *(long *)(c + 0xC6C),
+                  round ? *(DWORD *)(round + 0x1D8) : 0, round ? *(DWORD *)(round + 0x1E0) : 0, *(DWORD *)(c + 0x94C),
+                  *(DWORD *)(c + 0x938), (*(DWORD *)(stats + 0x39C) - *(DWORD *)(stats + 0x398)) / 16,
+                  (*(DWORD *)(stats + 0x3B0) - *(DWORD *)(stats + 0x3AC)) / 0x30, *(DWORD *)(STATS_BASE + BLOCKED_OFS), n);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        sprintf_s(line, sizeof line, "combat log: attack REFUSED (m_bActionBlocked), refusal %d in a row (state unreadable); "
+                  "%d source(s) with the flag", g_combatRefused, n);
+    }
+    g_combatQuiet = 0;
+    Log("%s", line);
+    for (i = 0; i < n && i < COMBAT_SOURCES; i++) {
+        char what[200];
+        CombatDescribe(g_combatSrc[i], what, sizeof what);
+        Log("combat log:   source %d: %s (block %08lX, summed from %06lX): %s", i + 1, CombatSourceKind(g_combatRet[i]),
+            g_combatSrc[i], g_combatRet[i], what);
+    }
+    if (!n) Log("combat log:   no summed block carried the flag: it was set some other way");
+}
+
+static BYTE *__fastcall CombatStatsHook(void *owner, void *edx, void *target, DWORD a, DWORD b)
+{
+    BYTE *r;
+    DWORD blocked = 0;
+    g_combatSources = 0;
+    g_combatProbeThread = GetCurrentThreadId();
+    r = ((CombatStats_t)COMBATSTATS_FUNC)(owner, edx, target, a, b);
+    g_combatProbeThread = 0;
+    __try {
+        BYTE *c = *(BYTE **)owner;
+        if (c && *(DWORD *)(c + 0xA44)) g_combatPlayer = c; // for the stuck-sequence watcher
+        blocked = *(DWORD *)(r + BLOCKED_OFS);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (blocked) {
+        CombatRefused((BYTE *)owner, (BYTE *)target);
+    } else if (g_combatRefused) {
+        BYTE *c = NULL;
+        __try { c = *(BYTE **)owner; if (!*(DWORD *)(c + 0xA44)) c = NULL; } __except (EXCEPTION_EXECUTE_HANDLER) { c = NULL; }
+        if (c) {
+            g_combatPlayer = c;
+            Log("combat log: player's attack accepted again after %d refusal(s)", g_combatRefused);
+            g_combatRefused = g_combatQuiet = 0;
+        }
+    }
+    return r;
+}
+
+// The player's attack sequence: in all three locks Geralt was "in a sequence" (creature+0xC58 = 1, the only
+// creature in the area in one without an active combat round) and every attack was cancelled at once. Logged:
+// who ends his sequence (FUN_008a45f0, this = creature+0xC58, 51 call sites), who cancels his attack
+// (FUN_008b47d0, this = creature, acts only in a sequence), both with the code addresses on the stack, and a
+// watcher line when he stays in a sequence without a combat round for 1.5 s.
+#define SEQEND_SITE       0x008A45F0 // sub esp,0Ch; push ebx; push esi | mov esi,ecx  (thiscall, ret 4)
+#define SEQEND_RESUME     0x008A45F5
+#define CANCEL_SITE       0x008B47D0 // push esi; mov esi,ecx; cmp dword [esi+0C58h],0  (thiscall, ret 4)
+#define CANCEL_RESUME     0x008B47DA
+#define COMBATLOG_LINES   5000
+#define STUCK_MS          1500
+
+static const BYTE kSeqEndOrig[] = { 0x83, 0xEC, 0x0C, 0x53, 0x56, 0x8B, 0xF1 };
+static const BYTE kCancelOrig[] = { 0x56, 0x8B, 0xF1, 0x83, 0xBE, 0x58, 0x0C, 0x00, 0x00, 0x00 };
+typedef void (__fastcall *SeqEnd_t)(void *, void *, int);
+static SeqEnd_t g_seqEndOriginal, g_cancelOriginal;
+static volatile LONG g_combatLines;
+
+static int IsPlayerCreature(BYTE *c)
+{
+    __try {
+        return c && *(DWORD *)(c + 4) == 0x7FFFFFFF && *(DWORD *)(c + 0xA44) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+static void StackCallers(const DWORD *ret, char *out, size_t size) // as MouseLookNote: exe code addresses above
+{
+    int i, n = 0;
+    size_t len = 0;
+    out[0] = 0;
+    __try {
+        for (i = 1; i < 96 && n < 6; i++) {
+            DWORD v = ret[i];
+            if (v >= 0x00401000 && v < 0x00AE0000) {
+                len += sprintf_s(out + len, size - len, " %06lX", v);
+                n++;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void PlayerState(BYTE *c, char *out, size_t size)
+{
+    __try {
+        BYTE *round = *(BYTE **)(c + 0xA34);
+        sprintf_s(out, size, "sequence %lu (%ld), combat round %lu, targets %08lX/%08lX, %lu queued actions",
+                  *(DWORD *)(c + 0xC58), *(long *)(c + 0xC6C), *(DWORD *)(round + 0x1D8), *(DWORD *)(c + 0x938),
+                  *(DWORD *)(c + 0x94C), *(DWORD *)(c + 0xC8));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(out, size, "(state unreadable)");
+    }
+}
+
+static void __fastcall SeqEndHook(BYTE *seq, void *edx, int arg)
+{
+    BYTE *c = NULL;
+    DWORD active = 0;
+    __try {
+        active = *(DWORD *)seq;
+        c = *(BYTE **)(seq + 0xC);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (active && IsPlayerCreature(c) && InterlockedIncrement(&g_combatLines) <= COMBATLOG_LINES) {
+        char state[160], callers[64];
+        g_combatPlayer = c;
+        PlayerState(c, state, sizeof state);
+        StackCallers((DWORD *)_AddressOfReturnAddress(), callers, sizeof callers);
+        Log("combat log: player's sequence ends (%d) from %06lX (stack:%s); %s", arg,
+            *(DWORD *)_AddressOfReturnAddress(), callers, state);
+    }
+    g_seqEndOriginal(seq, edx, arg);
+}
+
+static void __fastcall CancelHook(BYTE *c, void *edx, int arg)
+{
+    DWORD inSeq = 0;
+    __try { inSeq = *(DWORD *)(c + 0xC58); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (inSeq && IsPlayerCreature(c) && InterlockedIncrement(&g_combatLines) <= COMBATLOG_LINES) {
+        char state[160], callers[64];
+        g_combatPlayer = c;
+        PlayerState(c, state, sizeof state);
+        StackCallers((DWORD *)_AddressOfReturnAddress(), callers, sizeof callers);
+        Log("combat log: player's attack cancelled (%d) from %06lX (stack:%s); %s", arg,
+            *(DWORD *)_AddressOfReturnAddress(), callers, state);
+    }
+    g_cancelOriginal(c, edx, arg);
+}
+
+// Every 200 ms: is the player in a sequence without a combat round? (Read only; the creature may be gone after
+// a load, hence the checks. It is set again by the hooks.)
+static void CombatWatch(DWORD now)
+{
+    static DWORD since, reported;
+    BYTE *c = g_combatPlayer;
+    int stuck = 0;
+    if (!IsPlayerCreature(c)) { since = reported = 0; return; }
+    __try {
+        stuck = *(DWORD *)(c + 0xC58) && !*(DWORD *)(*(BYTE **)(c + 0xA34) + 0x1D8);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        stuck = 0;
+    }
+    if (stuck) {
+        if (!since) since = now ? now : 1;
+        if (!reported && now - since >= STUCK_MS) {
+            char state[160];
+            PlayerState(c, state, sizeof state);
+            Log("combat log: player STUCK in a sequence without a combat round for %.1f s; %s", (now - since) / 1000.0, state);
+            reported = 1;
+        }
+    } else if (since) {
+        if (reported) Log("combat log: player out of the stale sequence after %.1f s", (now - since) / 1000.0);
+        since = reported = 0;
+    }
+}
+
+// The engine's combat dumps are plain settings: (re)set them while the game runs (its settings constructor and
+// startup.luc run after we patch, and the console can turn them off).
+static DWORD WINAPI CombatFlagThread(LPVOID unused)
+{
+    size_t i;
+    int logged = 0;
+    (void)unused;
+    for (i = 0;; i++) {
+        if (i % 5 == 0) {
+            size_t k;
+            int set = 0;
+            for (k = 0; k < COMBAT_FLAG_COUNT; k++)
+                if (g_combatFlags[k].ok && *(volatile DWORD *)g_combatFlags[k].var == 0) {
+                    *(volatile DWORD *)g_combatFlags[k].var = 1;
+                    set++;
+                }
+            if (set && !logged) {
+                Log("combat log: engine combat dumps on (%d)", set);
+                logged = 1;
+            }
+        }
+        CombatWatch(GetTickCount());
+        Sleep(200);
+    }
+}
+
+static const char *ApplyCombatLog(void)
+{
+    static char result[96];
+    size_t i;
+    int flags = 0;
+    BYTE push[5] = { 0x68 }, call[5] = { 0xE8 }, *stub, *p, *je1, *je2;
+    char name[64];
+    HANDLE t;
+
+    for (i = 0; i < COMBAT_FLAG_COUNT; i++) {
+        CombatFlag *f = &g_combatFlags[i];
+        sprintf_s(name, sizeof name, "g_cAuroraSettings.%s", f->name);
+        *(DWORD *)(push + 1) = f->var;
+        f->ok = BytesMatch(f->nameStr, (const BYTE *)name, strlen(name) + 1) && BytesMatch(f->push, push, 5);
+        if (f->ok) flags++;
+        else Log("combat log: %s skipped (bytes differ)", f->name);
+    }
+    if (!BytesMatch(COMBATSTATS_CALL - 3, kCombatStatsCall, sizeof kCombatStatsCall) ||
+        !BytesMatch(STATSUM_SITE, kStatSumOrig, sizeof kStatSumOrig) ||
+        !BytesMatch(SEQEND_SITE, kSeqEndOrig, sizeof kSeqEndOrig) || !BytesMatch(CANCEL_SITE, kCancelOrig, sizeof kCancelOrig))
+        return "skipped (bytes differ)";
+    g_seqEndOriginal = (SeqEnd_t)Trampoline(kSeqEndOrig, SEQEND_RESUME - SEQEND_SITE, SEQEND_RESUME);
+    g_cancelOriginal = (SeqEnd_t)Trampoline(kCancelOrig, CANCEL_RESUME - CANCEL_SITE, CANCEL_RESUME);
+    if (!g_seqEndOriginal || !g_cancelOriginal) return "FAILED (no memory)";
+    // FUN_007a02f0 entry: if the probe is on and the source block has the flag, record it; then the two original
+    // instructions (they set EDX and XMM0 themselves, so EAX/EDX are free here) and back.
+    stub = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!stub) return "FAILED (no memory)";
+    p = stub;
+    *p++ = 0x83; *p++ = 0x3D; *(DWORD *)p = (DWORD)&g_combatProbeThread; p += 4; *p++ = 0x00; // cmp dword [probe],0
+    *p++ = 0x74; je1 = p++;                                                                      // je orig
+    memcpy(p, kStatSumOrig, 4); p += 4;                                                          // mov edx,[esp+4]
+    *p++ = 0x83; *p++ = 0xBA; *(DWORD *)p = BLOCKED_OFS; p += 4; *p++ = 0x00;                    // cmp dword [edx+0x5F4],0
+    *p++ = 0x74; je2 = p++;                                                                      // je orig
+    *p++ = 0x51;                                                                                 // push ecx (keep this)
+    *p++ = 0xFF; *p++ = 0x74; *p++ = 0x24; *p++ = 0x04;                                          // push [esp+4] (return address)
+    *p++ = 0x51;                                                                                 // push ecx (destination)
+    *p++ = 0x52;                                                                                 // push edx (source)
+    p = EmitCall(p, (DWORD)CombatRecordSource);
+    *p++ = 0x83; *p++ = 0xC4; *p++ = 0x0C;                                                       // add esp,12
+    *p++ = 0x59;                                                                                 // pop ecx
+    *je1 = (BYTE)(p - (je1 + 1));                                                                // orig:
+    *je2 = (BYTE)(p - (je2 + 1));
+    memcpy(p, kStatSumOrig, sizeof kStatSumOrig); p += sizeof kStatSumOrig;
+    *p++ = 0xE9; PutRel32(p, STATSUM_RESUME); p += 4;
+    FlushInstructionCache(GetCurrentProcess(), stub, p - stub);
+    *(DWORD *)(call + 1) = (DWORD)CombatStatsHook - (COMBATSTATS_CALL + 5);
+    if (!JumpFrom(STATSUM_SITE, stub) || !WriteCode(COMBATSTATS_CALL, call, 5) ||
+        !JumpFrom(SEQEND_SITE, SeqEndHook) || !JumpFrom(CANCEL_SITE, CancelHook))
+        return "FAILED (VirtualProtect)";
+    t = CreateThread(NULL, 0, CombatFlagThread, NULL, 0, NULL); // the dumps and the stuck-sequence watcher
+    if (t) CloseHandle(t);
+    sprintf_s(result, sizeof result, "applied (%d of %d engine combat dumps, refused attacks, player's sequence)", flags,
+              (int)COMBAT_FLAG_COUNT);
+    return result;
+}
+
+// ---- QoL 8: the Endurance bar blinks red when an attack fails for lack of Endurance -----------------------
+// Before an attack lands, FUN_0085ece0 subtracts its Endurance cost (block +0x4DC times +0x4E0; the charge sequences
+// carry 25 x 1.0, so a charged attack costs 25 of 100 Endurance) from the current Endurance. Below 0 it ends the attack sequence and
+// the attack is gone with nothing shown, so a full charge seemed to do nothing. The game already has a red blink
+// of the Endurance bar (CGuiInGame:TriggerEnduranceRedBlinkBlink, called by FUN_00466fe0 through the engine's Lua
+// call helper). The sequence end in that branch now goes to a function that ends it as before and, for the
+// player (still in a sequence, so it was the Endurance check that failed), triggers the same blink.
+
+#define ENDFAIL_CALL   0x0085EDD6 // call FUN_008a45f0 (ECX = creature+0xC58) in FUN_0085ece0's "cannot pay" branch
+#define LUA_HELPER     0x00C500C8 // the engine's Lua call helper object
+#define LUA_SELECT     0x0051CD70 // thiscall (helper, object, class name) ret 8; returns the helper
+#define LUA_METHOD     0x0051CE10 // thiscall (helper, method name) ret 4: calls object:method()
+#define APP_PTR        0x00EE47C0 // [[APP_PTR]] = app; [[app+0x10]+0x80] = the CGuiInGame object
+#define STR_CGUIINGAME 0x00B425C8 // "CGuiInGame", the strings FUN_00466fe0 passes
+#define STR_REDBLINK   0x00B48CE4 // "TriggerEnduranceRedBlinkBlink"
+#define COMBAT_RESULT  0x011BF018 // the modifier block FUN_008d10c0 returns
+
+// [qol] endurance_message (off by default) also writes "not enough Endurance: needs N, you have M" in the message
+// line: the DLL puts both numbers in the Lua globals EngineFix_EnduranceNeeded / EngineFix_EnduranceHave with the
+// game's Lua 5.0 API (cdecl; L = [[helper+0x18]+4]) and calls CGuiInGame:EngineFixLowEndurance(), which
+// Scripts\enginefix_hook.lua defines (it shows the text in the game's language with ShowGameInfo("feedback", ...)).
+#define LUA_PUSHNUMBER 0x00A5D2F0 // lua_pushnumber(L, double)
+#define LUA_PUSHSTRING 0x00A5D350 // lua_pushstring(L, const char *)
+#define LUA_SETTABLE   0x00A5D6E0 // lua_settable(L, index)
+#define LUA_GLOBALS    (-10001)   // LUA_GLOBALSINDEX in Lua 5.0
+static const char kLowEnduranceMethod[] = "EngineFixLowEndurance";
+
+// from 0x0085EDD0: push 0; fstp st0; mov ecx,ebx; call FUN_008a45f0; lea ecx,[esp+0x14]
+static const BYTE kEndFail[] = { 0x6A, 0x00, 0xDD, 0xD8, 0x8B, 0xCB, 0xE8, 0x15, 0x58, 0x04, 0x00, 0x8D, 0x4C, 0x24, 0x14 };
+typedef void *(__fastcall *LuaSelect_t)(void *helper, void *edx, void *object, const char *cls);
+typedef void (__fastcall *LuaMethod_t)(void *helper, void *edx, const char *method);
+typedef void (__cdecl *LuaPushNumber_t)(void *L, double n);
+typedef void (__cdecl *LuaPushString_t)(void *L, const char *s);
+typedef void (__cdecl *LuaSetTable_t)(void *L, int index);
+static volatile LONG g_qol8Count;
+static int g_qol8Blink, g_qol8Message;
+
+static void LuaSetGlobalNumber(void *L, const char *name, double value)
+{
+    ((LuaPushString_t)LUA_PUSHSTRING)(L, name);
+    ((LuaPushNumber_t)LUA_PUSHNUMBER)(L, value);
+    ((LuaSetTable_t)LUA_SETTABLE)(L, LUA_GLOBALS);
+}
+
+static void __fastcall EnduranceFailHook(BYTE *seq, void *edx, int arg)
+{
+    BYTE *gui = NULL;
+    int blink = 0;
+    float have = 0, costA = 0, costB = 0, base = 0;
+    __try {
+        BYTE *c = *(BYTE **)(seq + 0xC), *app = **(BYTE ***)APP_PTR, *stats;
+        blink = *(DWORD *)seq != 0 && *(DWORD *)(c + 4) == 0x7FFFFFFF && *(DWORD *)(c + 0xA44) != 0;
+        if (blink && app) gui = *(BYTE **)(*(BYTE **)(app + 0x10) + 0x80);
+        // what FUN_0085ece0 just compared: the block FUN_008d10c0 built (cost +0x4DC times +0x4E0; its copy is at
+        // esp+0x14, read as [esp+0x4F0] and [esp+0x4F4]) and the Endurance
+        stats = *(BYTE **)(c + 0x350);
+        costA = *(float *)(COMBAT_RESULT + 0x4DC);
+        costB = *(float *)(COMBAT_RESULT + 0x4E0);
+        have = *(float *)(stats + 0x1AC);
+        base = *(float *)(stats + 0x1B8);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        blink = 0;
+    }
+    ((SeqEnd_t)SEQUENCE_END)(seq, edx, arg);
+    if (!blink || !gui) return;
+    if (g_qol8Blink) {
+        void *helper = ((LuaSelect_t)LUA_SELECT)((void *)LUA_HELPER, NULL, gui, (const char *)STR_CGUIINGAME);
+        ((LuaMethod_t)LUA_METHOD)(helper, NULL, (const char *)STR_REDBLINK);
+    }
+    if (g_qol8Message) {
+        void *L = NULL, *helper;
+        __try { L = *(void **)(*(BYTE **)(LUA_HELPER + 0x18) + 4); } __except (EXCEPTION_EXECUTE_HANDLER) { L = NULL; }
+        if (L) {
+            LuaSetGlobalNumber(L, "EngineFix_EnduranceNeeded", (double)costA * costB);
+            LuaSetGlobalNumber(L, "EngineFix_EnduranceHave", have);
+            helper = ((LuaSelect_t)LUA_SELECT)((void *)LUA_HELPER, NULL, gui, (const char *)STR_CGUIINGAME);
+            ((LuaMethod_t)LUA_METHOD)(helper, NULL, kLowEnduranceMethod);
+        }
+    }
+    if (InterlockedIncrement(&g_qol8Count) <= 200)
+        Log("qol 8: attack failed for lack of Endurance (Endurance %.1f, stats+0x1B8 %.1f; the attack costs %.2f x %.2f = %.1f)%s%s",
+            have, base, costA, costB, costA * costB, g_qol8Blink ? ", Endurance bar blinked" : "",
+            g_qol8Message ? ", message shown" : "");
+}
+
+static const char *ApplyEnduranceBlink(int blink, int message)
+{
+    static const BYTE kPushNumber[] = { 0x8B, 0x44, 0x24, 0x04, 0xDD, 0x44, 0x24, 0x08 }; // mov eax,[esp+4]; fld qword [esp+8]
+    static const BYTE kSetTable[] = { 0x8B, 0x54, 0x24, 0x08, 0x85, 0xD2 };               // mov edx,[esp+8]; test edx,edx
+    BYTE call[5] = { 0xE8 };
+    if (message && (!BytesMatch(LUA_PUSHNUMBER, kPushNumber, sizeof kPushNumber) ||
+                    !BytesMatch(LUA_SETTABLE, kSetTable, sizeof kSetTable) ||
+                    !BytesMatch(LUA_PUSHSTRING, (const BYTE *)"\x55\x8B\x6C\x24\x0C\x85\xED", 7))) {
+        Log("qol 8: Endurance message skipped (Lua API bytes differ)");
+        message = 0;
+    }
+    if (!blink && !message) return "skipped (bytes differ)";
+    g_qol8Blink = blink;
+    g_qol8Message = message;
+    if (!BytesMatch(ENDFAIL_CALL - 6, kEndFail, sizeof kEndFail) ||
+        !BytesMatch(STR_CGUIINGAME, (const BYTE *)"CGuiInGame", 11) ||
+        !BytesMatch(STR_REDBLINK, (const BYTE *)"TriggerEnduranceRedBlinkBlink", 30))
+        return "skipped (bytes differ)";
+    *(DWORD *)(call + 1) = (DWORD)EnduranceFailHook - (ENDFAIL_CALL + 5);
+    if (!WriteCode(ENDFAIL_CALL, call, 5)) return "FAILED (VirtualProtect)";
+    return blink && message ? "applied (blink and message)" : blink ? "applied (blink)" : "applied (message only)";
+}
+
 // ---- Patch driver -----------------------------------------------------------
 
 // The Steam exe is SteamStub-wrapped: our DLL loads before the stub decrypts the code,
@@ -3020,6 +3925,10 @@ static void TryPatch(void)
     Log("fix 12 (Shift or a return to the game hides the cursor in the main menu): %s", FixEnabled("fix12") ? ApplyMainMenuShiftFix() : "disabled in ini");
     Log("fix 13 (hotkeys bound with bindkey lost after Alt+Tab in exclusive full screen): %s",
         FixEnabled("fix13") ? ApplyResetBindFix() : "disabled in ini");
+    Log("fix 14 (physics objects freed twice corrupt Karma's pools, crash at 0x9FFFE0): %s",
+        FixEnabled("fix14") ? ApplyKarmaPoolFix() : "disabled in ini");
+    Log("fix 15 (charge attack released out of reach locks further attacks): %s",
+        FixEnabled("fix15") ? ApplyPowerupFarFix() : "disabled in ini");
     Log("qol 1 (OTS camera: middle mouse button turns it in active pause): %s",
         IniFlag("qol", "ots_pause_mmb_camera", 1) ? ApplyOtsMmb() : "disabled in ini");
     {
@@ -3031,6 +3940,11 @@ static void TryPatch(void)
     Log("qol 6 (Windows key combinations and Print Screen in game, a lone Windows key still masked): %s",
         IniFlag("qol", "windows_key", 1) ? ApplyWinKeys() : "disabled in ini");
     {
+        int blink = IniFlag("qol", "endurance_blink", 1), message = IniFlag("qol", "endurance_message", 0);
+        Log("qol 8 (Endurance bar blinks red / message when an attack fails for lack of Endurance): %s",
+            blink || message ? ApplyEnduranceBlink(blink, message) : "disabled in ini");
+    }
+    {
         int level = IniInt("graphics", "detail", 0);
         int hotkey = IniFlag("graphics", "hotkey", 1) || IniFlag("debug", "detail_hotkey", 0); // the old [debug] name still counts
         if (level < 0 || level > 3) level = 0;
@@ -3040,7 +3954,9 @@ static void TryPatch(void)
     if (IniFlag("debug", "savelist_timing", 0)) Log("debug: save-list timing %s", ApplySaveListTiming());
     if (IniFlag("debug", "wait_timing", 0)) Log("debug: wait timing %s", ApplyWaitTiming());
     if (IniFlag("debug", "frame_log", 0)) Log("debug: frame log %s", ApplyFrameLog());
-    if (IniFlag("debug", "engine_log", 0)) Log("debug: engine log %s", ApplyEngineLog());
+    if (IniFlag("debug", "engine_log", 0) || IniFlag("debug", "combat_log", 0)) // combat_log's dumps go through it
+        Log("debug: engine log %s", ApplyEngineLog());
+    if (IniFlag("debug", "combat_log", 0)) Log("debug: combat log %s", ApplyCombatLog());
     if (IniFlag("debug", "mouse_log", 0)) Log("debug: mouse log %s", ApplyMouseLog());
 }
 

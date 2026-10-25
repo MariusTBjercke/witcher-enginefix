@@ -38,6 +38,10 @@
 --    which calls CGuiMan:AddSaveGame per save), parsed by the load list's own AddSaveGame, and are loaded the way
 --    the load list does it (LoadSavedGame(ID, SaveName, SaveFileName)).
 --
+-- 8. "Not enough Endurance" in the message line (QoL 8, [qol] endurance_message, off): CGuiInGame:EngineFixLowEndurance,
+--    called by dinput8.dll when an attack failed because its Endurance cost (25 for a charged attack) was more
+--    than was left. The DLL blinks the Endurance bar itself ([qol] endurance_blink).
+--
 -- Run at startup by the shared loader testtools.lua.
 
 local ENABLED = true           -- false turns the load/save list and journal fix off
@@ -65,18 +69,21 @@ local TEXTS = {
         continue = "CONTINUE",
         borderless = "Borderless window",
         borderlessTip = "With full screen off, the game fills the screen without a border.",
+        lowEndurance = "Not enough Endurance (%d/%d)",
     },
     [5]  = { -- Polish ("OPUŚĆ GRĘ" is the game's own text for both exit buttons)
         exit = "WYJDŹ DO PULPITU",
         continue = "KONTYNUUJ",
         borderless = "Okno bez ramki",
         borderlessTip = "Gdy pełny ekran jest wyłączony, gra wypełnia ekran bez ramki.",
+        lowEndurance = "Za mało energii (%d/%d)",
     },
     [10] = { -- German ("SPIEL VERLASSEN" is the game's own text for both)
         exit = "ZUM DESKTOP",
         continue = "FORTSETZEN",
         borderless = "Rahmenloses Fenster",
         borderlessTip = "Ohne Vollbild füllt das Spiel den Bildschirm ohne Rahmen aus.",
+        lowEndurance = "Nicht genug Ausdauer (%d/%d)",
     },
     [11] = { -- French ("QUITTER" is the game's own text for both, so "Exit to main menu" gets mainMenu; all from Illuzio on Nexus)
         exit = "QUITTER LE JEU",
@@ -84,42 +91,49 @@ local TEXTS = {
         mainMenu = "RETOUR AU MENU PRINCIPAL",
         borderless = "Fenêtre sans bordure",
         borderlessTip = "Lorsque le mode plein écran est désactivé, le jeu occupe tout l'écran sans bordure.",
+        lowEndurance = "Pas assez d'endurance (%d/%d)",
     },
     [12] = { -- Spanish ("SALIR DEL JUEGO" is the game's own text for "Exit to main menu")
         exit = "SALIR AL ESCRITORIO",
         continue = "CONTINUAR",
         borderless = "Ventana sin bordes",
         borderlessTip = "Sin pantalla completa, el juego ocupa toda la pantalla sin bordes.",
+        lowEndurance = "Aguante insuficiente (%d/%d)",
     },
     [13] = { -- Italian
         exit = "ESCI DAL GIOCO",
         continue = "CONTINUA",
         borderless = "Finestra senza bordi",
         borderlessTip = "Senza la modalità a tutto schermo, il gioco riempie lo schermo senza bordi.",
+        lowEndurance = "Resistenza insufficiente (%d/%d)",
     },
     [14] = { -- Russian
         exit = "ВЫХОД ИЗ ИГРЫ",
         continue = "ПРОДОЛЖИТЬ",
         borderless = "Окно без рамки",
         borderlessTip = "Без полноэкранного режима игра занимает весь экран без рамки.",
+        lowEndurance = "Недостаточно энергии (%d/%d)",
     },
     [15] = { -- Czech
         exit = "UKONČIT HRU",
         continue = "POKRAČOVAT",
         borderless = "Okno bez okraje",
         borderlessTip = "Bez celé obrazovky hra vyplní obrazovku bez okraje.",
+        lowEndurance = "Nedostatek energie (%d/%d)",
     },
     [16] = { -- Hungarian ("KILÉPÉS A JÁTÉKBÓL" is the game's own text for "Exit to main menu")
         exit = "KILÉPÉS A WINDOWSBA",
         continue = "FOLYTATÁS",
         borderless = "Keret nélküli ablak",
         borderlessTip = "Teljes képernyő nélkül a játék keret nélkül tölti ki a képernyőt.",
+        lowEndurance = "Nincs elég állóképesség (%d/%d)",
     },
     [21] = { -- Traditional Chinese
         exit = "離開遊戲",
         continue = "繼續遊戲",
         borderless = "無邊界視窗",
         borderlessTip = "關閉全螢幕時，遊戲會以無邊界視窗佔滿整個螢幕。",
+        lowEndurance = "耐力不足 (%d/%d)",
     },
 }
 
@@ -247,6 +261,21 @@ if KIDNAP_DOOR_FIX and CGuiInGame and CGuiInGame.PerformGUIActionsOnGameLoadingE
     end
 end
 
+-- QoL 8's message ([qol] endurance_message): dinput8.dll calls this on the in-game GUI when an attack failed for lack
+-- of Endurance, after putting the attack's cost and the Endurance left in two globals; shown as "(have/needed)". The
+-- check failed only when the Endurance left was below the cost, so it is rounded down and the cost up: the two never
+-- read the same.
+if CGuiInGame then
+    function CGuiInGame:EngineFixLowEndurance()
+        local ok, err = pcall(function()
+            local nNeeded = math.ceil(tonumber(EngineFix_EnduranceNeeded) or 0)
+            local nHave = math.floor(tonumber(EngineFix_EnduranceHave) or 0)
+            self:ShowGameInfo("feedback", string.format(Text("lowEndurance"), nHave, nNeeded))
+        end)
+        if not ok then Log("low Endurance message: " .. tostring(err)) end
+    end
+end
+
 if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel and createOKCancelPanel then
     local QUIT = "EngineFixExitGameButton"
     local STEP = -66 -- the buttons above are 62-66 units apart
@@ -283,9 +312,26 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
     end
     pcall(AddButtonDef) -- in case the skin is already loaded
 
-    local function ExitGame()
+    -- The main menu tears its panel down before ExitProgram (gui_mainmenu.luc _ExitProgram:
+    -- lm_pPanel:Deactivate(), delete(), then the global is cleared). Exiting from the pause menu with
+    -- the system panel still registered crashed the engine during shutdown: 0x4CF360 in a GUI event
+    -- handler (this = NULL) and 0x53943F in the script command list (garbage this). See
+    -- docs/fixes/qol2-pause-exit-button.md.
+    local function TearDownPanel(pPanel)
+        if not pPanel then return end
+        pcall(function()
+            if pPanel.lm_pPanel then pPanel.lm_pPanel:Deactivate() end
+        end)
+        pcall(function() pPanel:delete() end)
+        if g_pGuiMan and g_pGuiMan.lm_pInGameNewSystemPanel == pPanel then
+            g_pGuiMan.lm_pInGameNewSystemPanel = nil
+        end
+    end
+
+    local function ExitGame(pPanel)
         Log("pause menu: Exit game")
         pcall(PlayGuiSound, "gui_quit", 0)
+        TearDownPanel(pPanel)
         if g_pClientExoApp then
             g_pClientExoApp:ExitProgram(0)
         end
@@ -302,7 +348,7 @@ if PAUSE_EXIT_BUTTON and CSkinLoader and CSkinLoader.Load and CGuiNewSystemPanel
             g_GuiLayoutManager:SetButtonAction(QUIT, function()
                 createOKCancelPanel("GuiLExitToMainMenu", nil, function()
                     self:ToggleOff()
-                    ExitGame()
+                    ExitGame(self)
                 end, self, nil)
             end)
         end)

@@ -24,3 +24,19 @@ How the panel is built (Steam 1.5.0.1304, `System\Scripts`):
 ## Verification
 
 First in-game try: no button, because the definition was added at hook time, before the skin was loaded. Fixed by adding it after `CSkinLoader.Load`. Verified in game 2026-10-20: the button sits under "Exit to main menu", asks for confirmation and quits; the process was gone 5 s after the click (`pause menu: Exit game` at 11:21:51, exit at 11:21:56), no hang.
+
+## Exit crash (found 2026-10-23, fix not yet verified in game)
+
+The first version of this button called `ExitProgram(0)` with the system panel still registered, which crashed the engine during shutdown. The player never saw it (the process was already exiting), but it filled the Event Log.
+
+Evidence:
+
+- Four WER full dumps (`witcher-crash-lab\logs\dumps\wer`, all 2026-10-23) are shutdown crashes, two signatures: `0x4CF360` = `FUN_004cf340` with `this = NULL`, failing on the first access `[this+0x164]`; `0x53943F` = `FUN_005393c0` (the script/console command dispatcher, `sgrp_`/`hidewfx_`/`voice:`) with a garbage `this`, writing into the command list. Both run from `msvcr80!exit` after `UnloadArea()`.
+- Event Log, 120 days, 37 `witcher.exe` faults: the exit family (`0x4CF360` 15, `0x4AC7D6` 5, `0x13943F` 5, `0x1BD6A0` 2) is 27 of them, and **none exists before 2026-10-20 11:21** — the first time the button was pressed.
+- 18 of 18 `pause menu: Exit game` lines in `witcher_enginefix_lua.log` are followed 1-2 s later by one of those fault events.
+- `gui_mainmenu.luc` `_ExitProgram` does `g_pMainMenuPanel.lm_pPanel:Deactivate()`, `g_pMainMenuPanel:delete()`, `g_pMainMenuPanel = nil` **before** `g_pClientExoApp:ExitProgram(0)`. This button skipped all three.
+
+Change (first attempt, **did not help**): `ExitGame(pPanel)` tears the panel down (`lm_pPanel:Deactivate()`, `self:delete()` from `gui_new_systempanel.luc`, then clears `g_pGuiMan.lm_pInGameNewSystemPanel`) before `ExitProgram(0)`, mirroring the main menu. Tested in game 2026-10-23 21:43: `pause menu: Exit game` at 21:43:01, fault `0x13943F` at 21:43:02. The panel was not the problem.
+
+Where it stands (2026-10-23): the remaining difference from the main menu is that we quit with an area loaded. The fault is in `FUN_005752a0`, the `CAurObject` destructor, which dispatches the `Dying` script event through `FUN_005393c0` while the script system is already gone (`this` is garbage, `[this+4] = 0x2FC3DCA8`). Quitting from the main menu, with no area loaded, has produced none of these faults in 120 days of Event Log. So the engine's shutdown cannot cope with an in-game exit — which is presumably why the game itself only offers "Exit to main menu" while playing. Options: route the button through `ShutdownToMainMenu()` and quit once the main menu is up (no crash, but a loading screen), or accept an invisible crash and document it.
+
