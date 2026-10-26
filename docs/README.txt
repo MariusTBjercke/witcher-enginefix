@@ -32,6 +32,14 @@ What it fixes:
 - Hotkeys bound by mods (Witcher Speed Toggle's V/B, quick loot on a key
   other than Space) no longer stop working after Alt+Tab in exclusive full
   screen without DXVK. They are bound again after each Alt+Tab.
+- With the over-the-shoulder camera, Shift in the main menu (or coming back
+  after the Snipping Tool) no longer hides the cursor.
+- Physics crash in fights: the physics library sometimes freed an object twice
+  and then gave one block of memory to two objects. A second free is skipped.
+- Attacks stop working in fights: Geralt could get stuck so that every click
+  failed and a held charge did nothing, until you took a step (typically after
+  a charge attack released while the enemy was out of reach). He is now freed
+  at once, at the latest by the next attack you try.
 
 Quality of life:
 - Over-the-shoulder camera: hold the middle mouse button during active pause
@@ -41,6 +49,12 @@ Quality of life:
 - Quick loot: Space in the loot window presses "Take all". In shops and storage
   it does nothing; everywhere else it still pauses, as before. The same as the
   Witcher Quick Loot mod; if that one is installed too, it takes over.
+- Windows key combinations (Win+Shift+S) and Print Screen work in game; a
+  Windows key pressed on its own still does not open the Start menu.
+- "Continue" at the top of the main menu loads your newest save.
+- Endurance warning: a charged attack costs 25 Endurance (of 40 at the start),
+  and with less the game dropped it without a sign. The Endurance bar now
+  blinks red.
 
 Optional, off by default:
 - Borderless window: Options > Graphics > "Borderless window". With full
@@ -48,6 +62,8 @@ Optional, off by default:
   border and alt-tab is instant.
 - Skip the intro: [qol] skip_intro=1 in the ini goes straight to the main menu
   at startup, without the logos and the intro cinematic.
+- Endurance message: [qol] endurance_message=1 also shows "Not enough
+  Endurance (19/25)" (what you have / what it needs) in the message line.
 - Longer draw distances: [graphics] detail=1 (high) or 2 (ultra) in the ini
   keeps full-detail scenery, creatures and trees, grass, shadows and lights
   out to 1.5-3x the game's distances, on top of the options menu; 3 (extreme)
@@ -86,7 +102,7 @@ CONFIGURATION
 -------------
 System\witcher_enginefix.ini: 1 = on, 0 = off. Restart the game after a change.
 The [qol] section holds the quality-of-life changes (on by default, except
-borderless and skip_intro). [graphics]
+borderless, skip_intro and endurance_message). [graphics]
 detail=1, 2 or 3 turns on the longer draw distances (0 = off). The [debug]
 section holds diagnostics for development; leave them off.
 In System\Scripts\enginefix_hook.lua, "local ENABLED = false" turns off the menu

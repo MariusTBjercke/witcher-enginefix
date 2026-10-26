@@ -1,6 +1,6 @@
 # The mod's texts in the game's languages
 
-The mod shows texts of its own: the pause menu's "Exit game" button (QoL 2), "Borderless window" and its tooltip in Options > Graphics (QoL 3), the Ctrl+F12 message (graphics detail) and, since 0.7.0, the main menu's "Continue" (QoL 7). Since 0.6.0 they follow the game's text language. Reported by Illuzio on Nexus (2026-10-20): in French both pause menu buttons read "QUITTER".
+The mod shows texts of its own: the pause menu's "Exit game" button (QoL 2), "Borderless window" and its tooltip in Options > Graphics (QoL 3), the Ctrl+F12 message (graphics detail), since 0.7.0 the main menu's "Continue" (QoL 7) and, since 0.8.0, the optional "Not enough Endurance (have/needed)" message (QoL 8, `lowEndurance`, with the game's own word for Endurance, StrRef 67). Since 0.6.0 they follow the game's text language. Reported by Illuzio on Nexus (2026-10-20): in French both pause menu buttons read "QUITTER".
 
 ## Languages
 

@@ -111,7 +111,7 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
 
-#define ENGINEFIX_VERSION "0.7.2"
+#define ENGINEFIX_VERSION "0.8.0"
 
 static HMODULE g_self;
 static HMODULE g_realDinput;
@@ -3687,7 +3687,10 @@ static void CombatWatch(DWORD now)
     int stuck = 0;
     if (!IsPlayerCreature(c)) { since = reported = 0; return; }
     __try {
-        stuck = *(DWORD *)(c + 0xC58) && !*(DWORD *)(*(BYTE **)(c + 0xA34) + 0x1D8);
+        // a held charge (action 0x45 at the head of the queue) is in a sequence without a round too: not stuck
+        DWORD n = *(DWORD *)(c + 0xC8), **queue = *(DWORD ***)(c + 0xC4);
+        int charging = n > 0 && queue && queue[0] && *queue[0] == 0x45;
+        stuck = !charging && *(DWORD *)(c + 0xC58) && !*(DWORD *)(*(BYTE **)(c + 0xA34) + 0x1D8);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         stuck = 0;
     }

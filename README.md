@@ -7,6 +7,9 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 | | What you notice | Default |
 |---|---|---|
 | **Crash in big fights** | A random crash when a death effect fires after the creature that caused it is already gone. | on |
+| **Physics crash in fights** | The physics library sometimes freed an object twice and then gave one block of memory to two objects, which crashed the game later in the fight. A second free is now skipped. | on |
+| **Attacks stop working in fights** | In crowded fights Geralt could get stuck: every click failed (sometimes with a crossed-out sword) and a held charge did nothing, until you took a step. Typically after a charge attack released while the enemy was out of reach. He is now freed at once, at the latest by the next attack you try. | on |
+| **Endurance warning** | Quality of life: a charged attack costs 25 Endurance (of 40 at the start), and with less the game dropped it without a sign, so a full charge seemed to do nothing. The Endurance bar now blinks red. Optional: a short message such as "Not enough Endurance (19/25)". | on (message off) |
 | **Slow load/save menu** | With many saves the menu took seconds to open. 531 saves: **14 s → under 1 s**. | on |
 | **Faster saving and loading** | The save checksum is computed 4× faster (a 230 MB save: ~0.33 s → 0.08 s). Identical result, so saves stay compatible with the unmodified game. | on |
 | **Faster area loading** | The game rebuilt the mipmaps of textures that ship without them (menus, fog of war) on the CPU at every loading screen. They are now built once and kept in a cache, with byte-identical results: about **1 s less per area transition** once an area has been visited (menu textures 0.63 s → 0.05 s; the first menu load at startup 0.44 s → 0.07 s). | on |
@@ -30,7 +33,7 @@ Crash, performance and quality-of-life fixes for **The Witcher: Enhanced Edition
 
 Each fix can be switched off on its own. Details for each fix are in [`docs/fixes/`](docs/fixes/).
 
-The mod's own texts (the "Exit game" button, "Borderless window" and the Ctrl+F12 message) follow the game's text language, in all ten languages the game ships: English, Polish, German, French, Spanish, Italian, Russian, Czech, Hungarian and Traditional Chinese. Corrections are welcome ([how](docs/fixes/texts.md#adding-or-fixing-a-translation)).
+The mod's own texts (the "Exit game" button, "Borderless window", the Ctrl+F12 message and the Endurance message) follow the game's text language, in all ten languages the game ships: English, Polish, German, French, Spanish, Italian, Russian, Czech, Hungarian and Traditional Chinese. Corrections are welcome ([how](docs/fixes/texts.md#adding-or-fixing-a-translation)).
 
 ## Requirements
 
@@ -50,7 +53,7 @@ To check that it works, open `System\witcher_enginefix.log` after starting the g
 |---|---|
 | `System\dinput8.dll` | The engine fix. The game loads it automatically |
 | `System\witcher_enginefix.ini` | Settings |
-| `System\Scripts\enginefix_hook.lua` | The load/save menu fix, the "The Source" door fix, the pause menu's "Exit game", "Borderless window" in the options and quick loot |
+| `System\Scripts\enginefix_hook.lua` | The load/save menu fix, the "The Source" door fix, the pause menu's "Exit game", "Borderless window" in the options, quick loot, "Continue" and the Endurance message |
 | `Data\Override\EngineFix\` | The "The Source" door script and the quick loot hotkey script (`.ncs`), with their sources (`.nss`) |
 | `System\Scripts\testtools.lua` | Shared startup loader (see [Compatibility](#compatibility)) |
 
@@ -73,6 +76,8 @@ fix10=1  ; cursor comes back in the middle of the screen after mouse look, not i
 fix11=1  ; react at once when coming back to the game after an alt-tab
 fix12=1  ; Shift does not hide the cursor in the main menu
 fix13=1  ; mod hotkeys keep working after Alt+Tab in exclusive full screen
+fix14=1  ; physics: an object freed twice no longer corrupts the physics pools (crash in fights)
+fix15=1  ; fights: Geralt no longer gets stuck with every attack failing until he moves
 
 [qol]
 ots_pause_mmb_camera=1   ; over-the-shoulder camera: hold the middle mouse button to turn it in active pause
@@ -82,6 +87,8 @@ quick_loot_key=SPACE     ; one engine key name; with SPACE it still pauses outsi
 skip_intro=0             ; 1 = skip the logos and the intro cinematic at startup
 continue_button=1        ; "Continue" at the top of the main menu loads the newest save
 windows_key=1            ; Windows key combinations and Print Screen work in game (a lone Windows key still does nothing)
+endurance_blink=1        ; the Endurance bar blinks red when an attack fails for lack of Endurance
+endurance_message=0      ; 1 = also "Not enough Endurance (have/needed)" in the message line
 
 [graphics]
 detail=0   ; longer LOD, grass, shadow and light distances: 0 = the game's own, 1 = high, 2 = ultra, 3 = extreme

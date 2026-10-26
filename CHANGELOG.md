@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- Fix 14: a crash in fights at `0x9FFFE0` came from the physics library (Karma) freeing some objects twice; its pools then handed one block to two owners. A second free of a block that is already free is now skipped and logged, and freed blocks wait in a short queue before they are reused, so a late second free is caught too. `[fixes] fix14=0` turns it off.
+- Fix 15: in crowded fights Geralt could get stuck so that every attack failed (the cursor sometimes showed a crossed-out sword, a held charge did nothing) until he took a step. A charge attack released while the enemy was out of reach, or an attack cut short another way, left him in his attack sequence without a combat round. That sequence is now ended the way a step ends it: right at that release, and otherwise at the first refused attack, so the next one works. `[fixes] fix15=0` turns it off.
+- QoL 8, Endurance warning (on by default): a charged attack costs 25 Endurance (of 40 at the start of the game), and with less the game dropped it without a sign, so a full charge seemed to do nothing. The Endurance bar now blinks red, the game's own effect. `[qol] endurance_blink=0` turns it off. Optional, off by default: `[qol] endurance_message=1` also shows "Not enough Endurance (19/25)" (what you have / what it needs) in the message line, in all ten languages.
+- Diagnostics: `[debug] combat_log` turns on the engine's own combat logging and logs who refuses, cancels or ends the player's attacks.
+
 ## 0.7.2
 
 - Fix 13: hotkeys bound with `bindkey` (Witcher Speed Toggle's V/B, quick loot on a key other than Space) keep working after Alt+Tab in exclusive full screen without DXVK. Coming back, the game resets the device and rebuilds its input handling (`FUN_0053e5e0` → `FUN_007503e0`) with only its own keys, and calls no Lua, so the shared loader could not help there. The DLL now binds every line of `keybinding.ini` again after that reset, as at startup. `[fixes] fix13=0` turns it off.
