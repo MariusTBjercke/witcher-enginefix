@@ -8,6 +8,8 @@ A charged attack (hold the attack button until Geralt takes the charged pose, an
 
 The game has a red blink of the Endurance bar, `CGuiInGame:TriggerEnduranceRedBlinkBlink` (`gui.luc`, which forwards it to the status panel). `FUN_00466fe0` calls it through the engine's Lua call helper at `0x00C500C8`: `FUN_0051cd70(helper, gui, "CGuiInGame")` (thiscall, ret 8) selects the object, `FUN_0051ce10(helper, "TriggerEnduranceRedBlinkBlink")` (thiscall, ret 4) calls the method, with the GUI object at `[[app+0x10]+0x80]` (`FUN_00403890`, app = `[[0x00EE47C0]]`).
 
+The Endurance the check uses is stats `vfunc+0x2C(0)` (`0x00772BE0`): current `+0x1AC` plus temporary `+0x1A8`. The HUD bar shows that same value against the maximum `FUN_00773cd0(stats, 0)` = (`+0x1A4` + `+0x2FC`) × `+0x300` (40 in the dumps of 2026-10-25), not against 100 (`+0x1B8` = 100 is something else). So with a maximum of 40 a charged attack needs more than 60 % of the bar. On 2026-10-26 11:20 the owner saw a full bar when the check read 19.1 and 22.0; the log line now records the maximum too.
+
 ## Change
 
 The `call FUN_008a45f0` at `0x0085EDD6` in the "cannot pay" branch goes to a function that ends the sequence as before and then, if the creature is the player and was still in a sequence (the other way into that branch is "no longer in a sequence"), makes the same two calls with the game's own strings (`0x00B425C8`, `0x00B48CE4`). The branch's 15 bytes and both strings are checked first. Each blink is logged: `qol 8: attack failed for lack of Endurance, Endurance bar blinked` (at most 200 lines).

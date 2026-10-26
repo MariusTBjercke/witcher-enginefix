@@ -3836,18 +3836,20 @@ static void __fastcall EnduranceFailHook(BYTE *seq, void *edx, int arg)
 {
     BYTE *gui = NULL;
     int blink = 0;
-    float have = 0, costA = 0, costB = 0, base = 0;
+    float have = 0, costA = 0, costB = 0, max = 0;
     __try {
         BYTE *c = *(BYTE **)(seq + 0xC), *app = **(BYTE ***)APP_PTR, *stats;
         blink = *(DWORD *)seq != 0 && *(DWORD *)(c + 4) == 0x7FFFFFFF && *(DWORD *)(c + 0xA44) != 0;
         if (blink && app) gui = *(BYTE **)(*(BYTE **)(app + 0x10) + 0x80);
         // what FUN_0085ece0 just compared: the block FUN_008d10c0 built (cost +0x4DC times +0x4E0; its copy is at
-        // esp+0x14, read as [esp+0x4F0] and [esp+0x4F4]) and the Endurance
+        // esp+0x14, read as [esp+0x4F0] and [esp+0x4F4]) and the Endurance, stats vfunc+0x2C(0) = 0x00772BE0:
+        // current +0x1AC plus temporary +0x1A8. The HUD bar shows that against FUN_00773cd0(stats, 0):
+        // (+0x1A4 + +0x2FC) * +0x300 (40 in the dumps of 2026-10-25; +0x1B8 = 100 is something else).
         stats = *(BYTE **)(c + 0x350);
         costA = *(float *)(COMBAT_RESULT + 0x4DC);
         costB = *(float *)(COMBAT_RESULT + 0x4E0);
-        have = *(float *)(stats + 0x1AC);
-        base = *(float *)(stats + 0x1B8);
+        have = *(float *)(stats + 0x1AC) + *(float *)(stats + 0x1A8);
+        max = (*(float *)(stats + 0x1A4) + *(float *)(stats + 0x2FC)) * *(float *)(stats + 0x300);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         blink = 0;
     }
@@ -3868,8 +3870,8 @@ static void __fastcall EnduranceFailHook(BYTE *seq, void *edx, int arg)
         }
     }
     if (InterlockedIncrement(&g_qol8Count) <= 200)
-        Log("qol 8: attack failed for lack of Endurance (Endurance %.1f, stats+0x1B8 %.1f; the attack costs %.2f x %.2f = %.1f)%s%s",
-            have, base, costA, costB, costA * costB, g_qol8Blink ? ", Endurance bar blinked" : "",
+        Log("qol 8: attack failed for lack of Endurance (Endurance %.1f of %.1f on the bar; the attack costs %.2f x %.2f = %.1f)%s%s",
+            have, max, costA, costB, costA * costB, g_qol8Blink ? ", Endurance bar blinked" : "",
             g_qol8Message ? ", message shown" : "");
 }
 
